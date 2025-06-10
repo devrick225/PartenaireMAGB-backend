@@ -19,7 +19,13 @@ const paymentSchema = new mongoose.Schema({
   amount: {
     type: Number,
     required: [true, 'Le montant est requis'],
-    min: [0, 'Le montant ne peut pas être négatif']
+    min: [0, 'Le montant ne peut pas être négatif'],
+    validate: {
+      validator: function(value) {
+        return !isNaN(value) && isFinite(value) && value >= 0;
+      },
+      message: 'Le montant doit être un nombre valide et positif'
+    }
   },
   currency: {
     type: String,
@@ -38,7 +44,9 @@ const paymentSchema = new mongoose.Schema({
       'cash',             // Espèces
       'paypal',           // PayPal
       'apple_pay',        // Apple Pay
-      'google_pay'        // Google Pay
+      'google_pay',       // Google Pay
+      'crypto',            // Cryptomonnaie
+      'moneyfusion'
     ],
     required: [true, 'La méthode de paiement est requise']
   },
@@ -50,6 +58,8 @@ const paymentSchema = new mongoose.Schema({
       'cinetpay',          // CinetPay
       'stripe',            // Stripe
       'paypal',            // PayPal
+      'fusionpay',         // FusionPay
+      'moneyfusion',       // MoneyFusion (moneyfusion.net)
       'orange_money',      // Orange Money
       'mtn_mobile_money',  // MTN Mobile Money
       'moov_money',        // Moov Money
@@ -77,15 +87,48 @@ const paymentSchema = new mongoose.Schema({
   
   // Informations spécifiques à CinetPay
   cinetpay: {
-    transactionId: String,        // ID de transaction CinetPay
-    operatorTransactionId: String, // ID de transaction de l'opérateur
-    paymentUrl: String,           // URL de paiement
-    paymentToken: String,         // Token de paiement
-    operatorId: String,           // ID de l'opérateur (Orange, MTN, etc.)
-    operatorName: String,         // Nom de l'opérateur
-    paymentMethod: String,        // Méthode spécifique CinetPay
-    customerPhone: String,        // Numéro du client
-    description: String,          // Description du paiement
+    transactionId: String,          // cpm_trans_id - ID de transaction CinetPay
+    paymentId: String,              // cpm_payid - ID de paiement CinetPay
+    siteId: String,                 // cpm_site_id - Site ID
+    paymentUrl: String,             // URL de paiement générée
+    paymentToken: String,           // Token de paiement
+    
+    // Statut et résultat
+    status: String,                 // cpm_trans_status: ACCEPTED, REFUSED, PENDING
+    statusLabel: String,            // cpm_trans_status_label
+    result: String,                 // cpm_result - Code résultat
+    errorMessage: String,           // cpm_error_message - Message d'erreur
+    
+    // Détails du paiement
+    amount: Number,                 // cpm_amount - Montant traité
+    currency: String,               // cpm_currency - Devise
+    paymentConfig: String,          // cpm_payment_config - Configuration de paiement
+    paymentDate: String,            // cpm_payment_date - Date du paiement
+    paymentTime: String,            // cpm_payment_time - Heure du paiement
+    
+    // Informations client
+    customerPhone: String,          // Numéro du client
+    customerName: String,           // Nom du client
+    customerEmail: String,          // Email du client
+    
+    // Métadonnées et configuration
+    customData: mongoose.Schema.Types.Mixed, // cpm_custom - Données personnalisées
+    designVars: mongoose.Schema.Types.Mixed, // cpm_designvars - Variables de design
+    
+    // Timestamps
+    initiatedAt: Date,              // Date d'initiation
+    completedAt: Date,              // Date de completion
+    failedAt: Date,                 // Date d'échec
+    pendingAt: Date,                // Date de mise en attente
+    
+    // Réponse API complète pour debug
+    apiResponse: mongoose.Schema.Types.Mixed, // Réponse complète du webhook
+    
+    // Informations additionnelles
+    operatorId: String,             // ID de l'opérateur (si mobile money)
+    operatorName: String,           // Nom de l'opérateur
+    operatorTransactionId: String,  // ID de transaction de l'opérateur
+    
     metadata: mongoose.Schema.Types.Mixed // Métadonnées additionnelles
   },
   
@@ -238,7 +281,54 @@ const paymentSchema = new mongoose.Schema({
       default: Date.now
     },
     metadata: mongoose.Schema.Types.Mixed
-  }]
+  }],
+  
+  // Informations spécifiques à FusionPay
+  fusionpay: {
+    transactionId: String,        // ID de transaction FusionPay
+    reference: String,            // Référence unique FusionPay
+    paymentUrl: String,           // URL de paiement
+    status: String,               // Statut FusionPay
+    paymentMethod: String,        // Méthode spécifique FusionPay
+    customerInfo: mongoose.Schema.Types.Mixed, // Infos client
+    fees: {
+      percentageFee: Number,      // Frais en pourcentage
+      fixedFee: Number,           // Frais fixes
+      totalFee: Number,           // Total des frais
+      currency: String            // Devise des frais
+    },
+    expiresAt: Date,             // Date d'expiration
+    completedAt: Date,           // Date de completion
+    exchangeRate: Number,        // Taux de change (si applicable)
+    cryptoDetails: {             // Détails crypto si applicable
+      wallet: String,
+      blockchain: String,
+      txHash: String,
+      confirmations: Number
+    },
+    metadata: mongoose.Schema.Types.Mixed // Métadonnées additionnelles
+  },
+  
+  // Informations spécifiques à MoneyFusion
+  moneyfusion: {
+    token: String,                // Token de paiement MoneyFusion
+    paymentUrl: String,           // URL de redirection
+    transactionReference: String, // Référence de transaction
+    status: String,               // Statut MoneyFusion (paid, pending, failed, etc.)
+    customerInfo: {
+      name: String,               // Nom du client
+      phone: String               // Téléphone du client
+    },
+    fees: {
+      amount: Number,             // Montant des frais
+      currency: String            // Devise des frais
+    },
+    paymentMethod: String,        // Méthode utilisée (selon MoneyFusion)
+    customData: mongoose.Schema.Types.Mixed, // Données personnalisées stockées
+    completedAt: Date,            // Date de completion
+    apiResponse: mongoose.Schema.Types.Mixed, // Réponse complète de l'API
+    metadata: mongoose.Schema.Types.Mixed // Métadonnées additionnelles
+  }
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
@@ -253,8 +343,14 @@ paymentSchema.index({ provider: 1 });
 paymentSchema.index({ paymentMethod: 1 });
 paymentSchema.index({ 'transaction.reference': 1 });
 paymentSchema.index({ 'cinetpay.transactionId': 1 });
+paymentSchema.index({ 'cinetpay.paymentId': 1 });
+paymentSchema.index({ 'cinetpay.siteId': 1 });
 paymentSchema.index({ 'stripe.paymentIntentId': 1 });
 paymentSchema.index({ 'paypal.orderId': 1 });
+paymentSchema.index({ 'fusionpay.transactionId': 1 });
+paymentSchema.index({ 'fusionpay.reference': 1 });
+paymentSchema.index({ 'moneyfusion.token': 1 });
+paymentSchema.index({ 'moneyfusion.transactionReference': 1 });
 paymentSchema.index({ createdAt: -1 });
 
 // Index composé pour les requêtes fréquentes
@@ -341,6 +437,9 @@ paymentSchema.methods.markCompleted = function(transactionData = {}) {
   if (transactionData.paypal) {
     Object.assign(this.paypal, transactionData.paypal);
   }
+  if (transactionData.fusionpay) {
+    Object.assign(this.fusionpay, transactionData.fusionpay);
+  }
   if (transactionData.mobileMoney) {
     Object.assign(this.mobileMoney, transactionData.mobileMoney);
   }
@@ -403,6 +502,18 @@ paymentSchema.methods.calculateFees = function() {
     case 'stripe':
       // Frais Stripe (exemple: 2.9% + 30)
       processingFee = (this.amount * 0.029) + 30;
+      break;
+    case 'fusionpay':
+      // Calculer les frais FusionPay selon la méthode
+      const fusionPayService = require('../services/fusionPayService');
+      const fees = fusionPayService.calculateFees(this.amount, this.currency, this.paymentMethod);
+      processingFee = fees.totalFee;
+      break;
+    case 'moneyfusion':
+      // Calculer les frais MoneyFusion
+      const moneyFusionService = require('../services/moneyFusionService');
+      const mfFees = moneyFusionService.calculateFees(this.amount, this.currency);
+      processingFee = mfFees.totalFee;
       break;
     case 'orange_money':
     case 'mtn_mobile_money':

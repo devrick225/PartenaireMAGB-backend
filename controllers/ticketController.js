@@ -86,6 +86,15 @@ const createTicket = async (req, res) => {
       }
     });
 
+    // Vérification de sécurité: s'assurer que le ticketNumber est bien généré
+    if (!ticket.ticketNumber) {
+      console.warn('🚨 TicketNumber non généré par le middleware, génération manuelle...');
+      const timestamp = Date.now().toString(36);
+      const randomId = Math.random().toString(36).substr(2, 4);
+      ticket.ticketNumber = `TIC-MANUAL-${timestamp}-${randomId}`;
+      await ticket.save();
+    }
+
     // Ajouter à l'historique
     ticket.addToHistory('created', 'Ticket créé', req.user.id);
     await ticket.save();
@@ -806,6 +815,242 @@ const getTicketStats = async (req, res) => {
   }
 };
 
+// @desc    Ajouter un commentaire à un ticket
+// @route   POST /api/tickets/:id/comments
+// @access  Private
+const addTicketComment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { comment, isInternal = false } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de ticket invalide'
+      });
+    }
+
+    const ticket = await Ticket.findById(id).populate('user', 'firstName lastName email');
+
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        error: 'Ticket non trouvé'
+      });
+    }
+
+    // Vérifier les permissions
+    const isOwner = ticket.user._id.toString() === req.user.id;
+    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAssigned = ticket.assignedTo && ticket.assignedTo.toString() === req.user.id;
+
+    if (!isOwner && !isAdmin && !isAssigned) {
+      return res.status(403).json({
+        success: false,
+        error: 'Accès non autorisé à ce ticket'
+      });
+    }
+
+    // Seuls les admins peuvent ajouter des commentaires internes
+    if (isInternal && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Seuls les admins peuvent ajouter des commentaires internes'
+      });
+    }
+
+    // Créer le commentaire
+    const newComment = {
+      content: comment,
+      author: req.user.id,
+      isInternal,
+      createdAt: new Date()
+    };
+
+    // Ajouter le commentaire au ticket (on peut créer un modèle Comment séparé)
+    if (!ticket.comments) ticket.comments = [];
+    ticket.comments.push(newComment);
+
+    // Mettre à jour les métriques
+    if (!isOwner) {
+      // C'est une réponse du support
+      ticket.calculateFirstResponseTime();
+      ticket.metrics.responseCount += 1;
+    }
+
+    // Ajouter à l'historique
+    ticket.addToHistory('comment_added', 
+      isInternal ? 'Commentaire interne ajouté' : 'Commentaire ajouté', 
+      req.user.id, 
+      { comment: comment.substring(0, 100) + '...', isInternal }
+    );
+
+    await ticket.save();
+
+    // Envoyer notification si ce n'est pas un commentaire interne
+    if (!isInternal) {
+      try {
+        const notifyUser = isOwner ? null : ticket.user;
+        if (notifyUser) {
+          await emailService.sendTicketNotificationEmail(
+            notifyUser.email,
+            notifyUser.firstName,
+            {
+              ticketNumber: ticket.ticketNumber,
+              subject: ticket.subject,
+              comment: comment,
+              respondedBy: `${req.user.firstName} ${req.user.lastName}`
+            },
+            'comment_added'
+          );
+        }
+      } catch (emailError) {
+        console.error('Erreur notification commentaire:', emailError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Commentaire ajouté avec succès',
+      data: {
+        ticketId: ticket._id,
+        comment: newComment
+      }
+    });
+  } catch (error) {
+    console.error('Erreur addTicketComment:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de l\'ajout du commentaire'
+    });
+  }
+};
+
+// @desc    Obtenir les commentaires d'un ticket
+// @route   GET /api/tickets/:id/comments
+// @access  Private
+const getTicketComments = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de ticket invalide'
+      });
+    }
+
+    const ticket = await Ticket.findById(id)
+      .populate('comments.author', 'firstName lastName email role')
+      .populate('user', 'firstName lastName email');
+
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        error: 'Ticket non trouvé'
+      });
+    }
+
+    // Vérifier les permissions
+    const isOwner = ticket.user._id.toString() === req.user.id;
+    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAssigned = ticket.assignedTo && ticket.assignedTo.toString() === req.user.id;
+
+    if (!isOwner && !isAdmin && !isAssigned) {
+      return res.status(403).json({
+        success: false,
+        error: 'Accès non autorisé à ce ticket'
+      });
+    }
+
+    // Filtrer les commentaires internes si l'utilisateur n'est pas admin
+    let comments = ticket.comments || [];
+    if (!isAdmin) {
+      comments = comments.filter(comment => !comment.isInternal);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ticketId: ticket._id,
+        comments
+      }
+    });
+  } catch (error) {
+    console.error('Erreur getTicketComments:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des commentaires'
+    });
+  }
+};
+
+// @desc    Upload d'une pièce jointe
+// @route   POST /api/tickets/:id/attachments
+// @access  Private
+const uploadTicketAttachment = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de ticket invalide'
+      });
+    }
+
+    const ticket = await Ticket.findById(id);
+
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        error: 'Ticket non trouvé'
+      });
+    }
+
+    // Vérifier les permissions
+    const isOwner = ticket.user.toString() === req.user.id;
+    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAssigned = ticket.assignedTo && ticket.assignedTo.toString() === req.user.id;
+
+    if (!isOwner && !isAdmin && !isAssigned) {
+      return res.status(403).json({
+        success: false,
+        error: 'Accès non autorisé à ce ticket'
+      });
+    }
+
+    // TODO: Implémenter l'upload avec Multer et Cloudinary
+    // Pour l'instant, on simule l'upload
+    const attachment = {
+      filename: 'sample-file.pdf',
+      originalName: 'document.pdf',
+      url: 'https://cloudinary.com/sample-file-url',
+      size: 1024000,
+      mimeType: 'application/pdf',
+      uploadedBy: req.user.id,
+      uploadedAt: new Date()
+    };
+
+    await ticket.addAttachment(attachment);
+
+    res.json({
+      success: true,
+      message: 'Pièce jointe uploadée avec succès',
+      data: {
+        ticketId: ticket._id,
+        attachment
+      }
+    });
+  } catch (error) {
+    console.error('Erreur uploadTicketAttachment:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de l\'upload de la pièce jointe'
+    });
+  }
+};
+
 module.exports = {
   getTickets,
   createTicket,
@@ -816,5 +1061,8 @@ module.exports = {
   closeTicket,
   escalateTicket,
   addTicketRating,
-  getTicketStats
+  getTicketStats,
+  addTicketComment,
+  getTicketComments,
+  uploadTicketAttachment
 }; 

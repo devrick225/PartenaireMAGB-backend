@@ -134,7 +134,7 @@ const donationSchema = new mongoose.Schema({
   // Informations de paiement
   paymentMethod: {
     type: String,
-    enum: ['card', 'mobile_money', 'bank_transfer', 'cash', 'paypal'],
+    enum: ['card', 'mobile_money', 'bank_transfer', 'cash', 'paypal', 'moneyfusion'],
     required: [true, 'La méthode de paiement est requise']
   },
   

@@ -55,6 +55,7 @@ const getProfile = async (req, res) => {
             currency: user.currency,
             avatar: user.avatar,
             role: user.role,
+            isActive: user.isActive,
             isEmailVerified: user.isEmailVerified,
             isPhoneVerified: user.isPhoneVerified,
             createdAt: user.createdAt,
@@ -81,7 +82,9 @@ const getProfile = async (req, res) => {
           volunteer: profile.volunteer,
           familyInfo: profile.familyInfo,
           isComplete: profile.isComplete,
-          completionPercentage: profile.profileCompletionPercentage
+          completionPercentage: profile.profileCompletionPercentage,
+          createdAt: profile.createdAt,
+          updatedAt: profile.updatedAt
         }
       }
     });
@@ -122,23 +125,103 @@ const updateProfile = async (req, res) => {
       user.profile = profile._id;
       await user.save({ validateBeforeSave: false });
     } else {
-      // Mettre à jour le profil existant
+      // Mettre à jour le profil existant avec gestion des champs imbriqués
       Object.keys(updates).forEach(key => {
         if (updates[key] !== undefined) {
-          profile[key] = updates[key];
+          // Gérer les champs imbriqués spéciaux
+          if (key.includes('.')) {
+            // Utiliser la notation point pour les champs imbriqués
+            const keys = key.split('.');
+            let current = profile;
+            
+            // Naviguer jusqu'au parent
+            for (let i = 0; i < keys.length - 1; i++) {
+              if (!current[keys[i]]) {
+                current[keys[i]] = {};
+              }
+              current = current[keys[i]];
+            }
+            
+            // Assigner la valeur
+            current[keys[keys.length - 1]] = updates[key];
+          } else {
+            // Champ simple
+            profile[key] = updates[key];
+          }
         }
       });
+      
+      // Marquer les champs modifiés pour Mongoose
+      profile.markModified('address');
+      profile.markModified('emergencyContact');
+      profile.markModified('churchMembership');
+      profile.markModified('donationPreferences');
+      profile.markModified('communicationPreferences');
+      profile.markModified('volunteer');
+      profile.markModified('familyInfo');
+      
       await profile.save();
     }
+
+    // Mettre à jour aussi les informations de base dans User si nécessaire
+    const userFields = ['firstName', 'lastName', 'phone', 'language', 'currency'];
+    let userUpdated = false;
+    
+    userFields.forEach(field => {
+      if (updates[field] && user[field] !== updates[field]) {
+        user[field] = updates[field];
+        userUpdated = true;
+      }
+    });
+    
+    if (userUpdated) {
+      await user.save({ validateBeforeSave: false });
+    }
+
+    // Recharger le profil avec les données calculées
+    await profile.populate('user', 'firstName lastName email phone avatar isActive isEmailVerified isPhoneVerified level points badges totalDonations donationCount country city language currency createdAt');
 
     res.json({
       success: true,
       message: 'Profil mis à jour avec succès',
       data: {
+        user: {
+          firstName: profile.user.firstName,
+          lastName: profile.user.lastName,
+          email: profile.user.email,
+          phone: profile.user.phone,
+          avatar: profile.user.avatar,
+          isActive: profile.user.isActive,
+          isEmailVerified: profile.user.isEmailVerified,
+          isPhoneVerified: profile.user.isPhoneVerified,
+          level: profile.user.level,
+          points: profile.user.points,
+          badges: profile.user.badges,
+          totalDonations: profile.user.totalDonations,
+          donationCount: profile.user.donationCount,
+          country: profile.user.country,
+          city: profile.user.city,
+          language: profile.user.language,
+          currency: profile.user.currency,
+          createdAt: profile.user.createdAt
+        },
         profile: {
-          ...updates,
-          completionPercentage: profile.profileCompletionPercentage,
+          dateOfBirth: profile.dateOfBirth,
+          age: profile.age,
+          gender: profile.gender,
+          maritalStatus: profile.maritalStatus,
+          occupation: profile.occupation,
+          employer: profile.employer,
+          monthlyIncome: profile.monthlyIncome,
+          address: profile.address,
+          emergencyContact: profile.emergencyContact,
+          churchMembership: profile.churchMembership,
+          donationPreferences: profile.donationPreferences,
+          communicationPreferences: profile.communicationPreferences,
+          volunteer: profile.volunteer,
+          familyInfo: profile.familyInfo,
           isComplete: profile.isComplete,
+          completionPercentage: profile.profileCompletionPercentage,
           updatedAt: profile.updatedAt
         }
       }
@@ -558,7 +641,7 @@ const getUserStats = async (req, res) => {
 
     // Statistiques des dons
     const [donationStats] = await Donation.aggregate([
-      { $match: { user: mongoose.Types.ObjectId(id), status: 'completed' } },
+      { $match: { user: new mongoose.Types.ObjectId(id), status: 'completed' } },
       {
         $group: {
           _id: null,
@@ -838,6 +921,49 @@ const getLeaderboard = async (req, res) => {
   }
 };
 
+// @desc    Télécharger les données personnelles (RGPD)
+// @route   GET /api/users/profile/download-data
+// @access  Private
+const downloadPersonalData = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id)
+      .populate('profile')
+      .select('-password -emailVerificationToken -passwordResetToken -twoFactorSecret');
+
+    const donations = await Donation.find({ user: req.user.id })
+      .populate('payment', 'status provider')
+      .select('-__v');
+
+    const personalData = {
+      user: {
+        ...user.toObject(),
+        exportDate: new Date().toISOString(),
+        exportedBy: 'User Self-Export'
+      },
+      donations: donations.map(donation => donation.toObject()),
+      exportMetadata: {
+        version: '1.0',
+        format: 'JSON',
+        totalRecords: {
+          user: 1,
+          donations: donations.length
+        }
+      }
+    };
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="donnees-personnelles-${user.firstName}-${user.lastName}-${Date.now()}.json"`);
+    
+    res.json(personalData);
+  } catch (error) {
+    console.error('Erreur downloadPersonalData:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du téléchargement des données'
+    });
+  }
+};
+
 module.exports = {
   getProfile,
   updateProfile,
@@ -850,5 +976,6 @@ module.exports = {
   uploadAvatar,
   updateUserPreferences,
   deleteUserAccount,
-  getLeaderboard
+  getLeaderboard,
+  downloadPersonalData
 }; 

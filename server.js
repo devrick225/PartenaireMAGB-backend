@@ -17,6 +17,10 @@ const webhookRoutes = require('./routes/webhooks');
 const errorHandler = require('./middleware/errorHandler');
 const logger = require('./middleware/logger');
 
+// Import des services
+const websocketService = require('./services/websocketService');
+const cronJobsService = require('./services/cronJobs');
+
 const app = express();
 
 // Configuration CORS
@@ -35,6 +39,7 @@ app.use(cors(corsOptions));
 app.use(logger);
 
 // Rate limiting
+/*
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
@@ -43,6 +48,7 @@ const limiter = rateLimit({
   }
 });
 app.use('/api/', limiter);
+*/
 
 // Parsing des données
 app.use(express.json({ limit: '10mb' }));
@@ -67,11 +73,11 @@ app.get('/health', (req, res) => {
 });
 
 // Documentation Swagger (en développement)
-if (process.env.NODE_ENV === 'development') {
+/*if (process.env.NODE_ENV === 'development') {
   const swaggerUi = require('swagger-ui-express');
   const swaggerDocument = require('./swagger.json');
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
-}
+}*/
 
 // Gestion des erreurs 404
 app.use('*', (req, res) => {
@@ -110,16 +116,43 @@ const startServer = async () => {
     console.log(`🏥 Health check: http://localhost:${PORT}/health`);
   });
 
+  // Initialiser le service WebSocket
+  try {
+    websocketService.initialize(server);
+    websocketService.startHeartbeat();
+    console.log('✅ Service WebSocket initialisé');
+  } catch (error) {
+    console.error('❌ Erreur initialisation WebSocket:', error);
+  }
+
+  // Initialiser les tâches cron
+  try {
+    cronJobsService.initialize();
+    console.log('✅ Tâches cron initialisées');
+  } catch (error) {
+    console.error('❌ Erreur initialisation tâches cron:', error);
+  }
+
   // Gestion gracieuse de l'arrêt
-  process.on('SIGTERM', () => {
-    console.log('SIGTERM reçu. Arrêt gracieux du serveur...');
+  const gracefulShutdown = (signal) => {
+    console.log(`${signal} reçu. Arrêt gracieux du serveur...`);
+    
+    // Arrêter les tâches cron
+    cronJobsService.stopAll();
+    
+    // Fermer les connexions WebSocket
+    websocketService.closeAll();
+    
     server.close(() => {
       mongoose.connection.close(false, () => {
         console.log('Connexion MongoDB fermée.');
         process.exit(0);
       });
     });
-  });
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 };
 
 if (require.main === module) {

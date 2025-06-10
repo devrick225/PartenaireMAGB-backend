@@ -270,11 +270,25 @@ userSchema.methods.resetLoginAttempts = function() {
 
 // Méthode pour mettre à jour les statistiques de donation
 userSchema.methods.updateDonationStats = function(amount) {
-  this.totalDonations += amount;
+  // Valider et nettoyer le montant
+  const validAmount = Number(amount);
+  if (isNaN(validAmount) || validAmount < 0) {
+    console.error(`❌ Montant invalide pour updateDonationStats: ${amount} (type: ${typeof amount})`);
+    throw new Error('Montant de donation invalide');
+  }
+
+  // S'assurer que les valeurs actuelles sont valides
+  this.totalDonations = isNaN(this.totalDonations) ? 0 : Number(this.totalDonations);
+  this.donationCount = isNaN(this.donationCount) ? 0 : Number(this.donationCount);
+  this.points = isNaN(this.points) ? 0 : Number(this.points);
+  this.level = isNaN(this.level) ? 1 : Number(this.level);
+
+  // Mettre à jour les statistiques
+  this.totalDonations += validAmount;
   this.donationCount += 1;
   
   // Système de points (1 point pour 1000 XOF ou équivalent)
-  const points = Math.floor(amount / 1000);
+  const points = Math.floor(validAmount / 1000);
   this.points += points;
   
   // Système de niveaux (tous les 1000 points)
@@ -282,6 +296,8 @@ userSchema.methods.updateDonationStats = function(amount) {
   if (newLevel > this.level) {
     this.level = newLevel;
   }
+
+  console.log(`✅ Stats utilisateur mises à jour - Amount: ${validAmount}, Total: ${this.totalDonations}, Count: ${this.donationCount}, Points: ${this.points}`);
   
   return this.save();
 };

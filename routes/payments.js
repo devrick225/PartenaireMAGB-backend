@@ -19,10 +19,10 @@ const initializePaymentValidation = [
     .isMongoId()
     .withMessage('ID de donation invalide'),
   body('provider')
-    .isIn(['cinetpay', 'stripe', 'paypal', 'orange_money', 'mtn_mobile_money', 'moov_money'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money'])
     .withMessage('Fournisseur de paiement invalide'),
   body('paymentMethod')
-    .isIn(['card', 'mobile_money', 'bank_transfer', 'paypal'])
+    .isIn(['card', 'mobile_money', 'bank_transfer', 'paypal', 'crypto', 'moneyfusion'])
     .withMessage('Méthode de paiement invalide'),
   body('customerPhone')
     .optional()
@@ -59,7 +59,7 @@ const getPaymentsValidation = [
     .withMessage('Statut invalide'),
   query('provider')
     .optional()
-    .isIn(['cinetpay', 'stripe', 'paypal', 'orange_money', 'mtn_mobile_money', 'moov_money'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money'])
     .withMessage('Fournisseur invalide')
 ];
 

@@ -4,6 +4,8 @@ const Payment = require('../models/Payment');
 const Donation = require('../models/Donation');
 const User = require('../models/User');
 const paymentService = require('../services/paymentService');
+const fusionPayService = require('../services/fusionPayService');
+const moneyFusionService = require('../services/moneyFusionService');
 const emailService = require('../services/emailService');
 
 // @desc    Initialiser un paiement
@@ -117,6 +119,58 @@ const initializePayment = async (req, res) => {
           payment.paypal = {
             orderId: initializationResult.orderId,
             approvalUrl: initializationResult.approvalUrl
+          };
+          break;
+
+        case 'fusionpay':
+          initializationResult = await fusionPayService.initializePayment({
+            amount: donation.amount,
+            currency: donation.currency,
+            customerInfo,
+            donationId,
+            callbackUrl: `${process.env.FRONTEND_URL}/payment/callback`,
+            paymentMethod,
+            description: `Don ${donation.category} - PARTENAIRE MAGB`
+          });
+
+          payment.fusionpay = {
+            transactionId: initializationResult.transactionId,
+            reference: initializationResult.reference,
+            paymentUrl: initializationResult.paymentUrl,
+            status: initializationResult.status,
+            paymentMethod: paymentMethod,
+            customerInfo,
+            expiresAt: initializationResult.expiresAt,
+            fees: fusionPayService.calculateFees(donation.amount, donation.currency, paymentMethod)
+          };
+          break;
+
+        case 'moneyfusion':
+          initializationResult = await moneyFusionService.initializePayment({
+            amount: donation.amount,
+            currency: donation.currency,
+            customerInfo,
+            donationId,
+            callbackUrl: `${process.env.FRONTEND_URL}/payment/callback`,
+            description: `Don ${donation.category} - PARTENAIRE MAGB`
+          });
+
+          payment.moneyfusion = {
+            token: initializationResult.transactionId,
+            paymentUrl: initializationResult.paymentUrl,
+            status: 'pending',
+            customerInfo: {
+              name: `${customerInfo.name} ${customerInfo.surname}`,
+              phone: customerInfo.phone
+            },
+            fees: moneyFusionService.calculateFees(donation.amount, donation.currency),
+            metadata: {
+              donation_id: donationId,
+              customer_email: customerInfo.email,
+              currency: donation.currency,
+              platform: 'partenaire-magb',
+              type: 'donation'
+            }
           };
           break;
 
@@ -290,6 +344,18 @@ const verifyPayment = async (req, res) => {
         case 'paypal':
           verificationResult = await paymentService.capturePayPalPayment(
             payment.paypal.orderId
+          );
+          break;
+
+        case 'fusionpay':
+          verificationResult = await fusionPayService.verifyPayment(
+            payment.fusionpay.transactionId
+          );
+          break;
+
+        case 'moneyfusion':
+          verificationResult = await moneyFusionService.verifyPayment(
+            payment.moneyfusion.token
           );
           break;
 

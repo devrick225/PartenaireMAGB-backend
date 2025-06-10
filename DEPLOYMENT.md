@@ -34,12 +34,38 @@ EMAIL_FROM=noreply@partenaire-magb.com
 
 ### 💳 Fournisseurs de paiement
 ```
+# CinetPay (Afrique de l'Ouest) - Documentation officielle
 CINETPAY_API_KEY=your_cinetpay_api_key
 CINETPAY_SITE_ID=your_cinetpay_site_id
+CINETPAY_SECRET_KEY=your_cinetpay_secret_key
+CINETPAY_ENVIRONMENT=sandbox # ou production
+
+# Stripe (International)
 STRIPE_SECRET_KEY=your_stripe_secret_key
 STRIPE_PUBLISHABLE_KEY=your_stripe_publishable_key
+STRIPE_WEBHOOK_SECRET=your_stripe_webhook_secret
+
+# PayPal (International)
 PAYPAL_CLIENT_ID=your_paypal_client_id
 PAYPAL_CLIENT_SECRET=your_paypal_client_secret
+PAYPAL_ENVIRONMENT=sandbox # ou production
+
+# FusionPay (fusionpay.io)
+FUSIONPAY_API_URL=https://api.fusionpay.io/v1
+FUSIONPAY_PUBLIC_KEY=your_fusionpay_public_key
+FUSIONPAY_SECRET_KEY=your_fusionpay_secret_key
+FUSIONPAY_WEBHOOK_SECRET=your_fusionpay_webhook_secret
+FUSIONPAY_ENVIRONMENT=sandbox
+
+# MoneyFusion (moneyfusion.net)
+MONEYFUSION_API_URL=https://www.pay.moneyfusion.net/api/v1/payment
+MONEYFUSION_ENVIRONMENT=production
+
+# Mobile Money (optionnel)
+ORANGE_MONEY_API_KEY=your_orange_money_api_key
+MTN_API_KEY=your_mtn_api_key
+MTN_SUBSCRIPTION_KEY=your_mtn_subscription_key
+MTN_ENVIRONMENT=sandbox
 ```
 
 ### ⚡ Rate Limiting
@@ -116,6 +142,12 @@ vercel --prod
 1. Créer un compte sur [stripe.com](https://stripe.com)
 2. Obtenir les clés depuis le dashboard
 
+### FusionPay
+1. Créer un compte sur [fusionpay.io](https://fusionpay.io)
+2. Obtenir les clés API depuis le dashboard
+3. Configurer l'URL webhook: `https://your-api.vercel.app/api/webhooks/fusionpay`
+4. Tester la connexion via `/api/webhooks/fusionpay/test`
+
 ### PayPal
 1. Créer une application sur [developer.paypal.com](https://developer.paypal.com)
 2. Obtenir Client ID et Client Secret
@@ -167,4 +199,33 @@ jobs:
           vercel-org-id: ${{ secrets.ORG_ID}}
           vercel-project-id: ${{ secrets.PROJECT_ID}}
           vercel-args: '--prod'
-``` 
+```
+
+## 🎯 Notes importantes pour CinetPay
+
+Selon la documentation officielle de CinetPay :
+
+### API Endpoint
+- **URL de production** : `https://api-checkout.cinetpay.com/v2/payment`
+- **URL de test** : `https://api-checkout.cinetpay.com/v2/payment` (même endpoint)
+
+### Montants autorisés
+- **Règle importante** : Le montant doit être un multiple de 5 (sauf pour USD)
+- **Devises supportées** : XOF, XAF, CDF, GNF, USD
+
+### Canaux de paiement
+- `ALL` : Tous les canaux (par défaut)
+- `MOBILE_MONEY` : Mobile Money uniquement
+- `CREDIT_CARD` : Cartes bancaires uniquement
+- `WALLET` : Portefeuilles électroniques
+
+### Webhook CinetPay
+L'URL de webhook sera automatiquement configurée à :
+```
+https://your-domain.vercel.app/api/webhooks/cinetpay
+```
+
+### Codes de statut CinetPay
+- `ACCEPTED` / `COMPLETED` : Paiement réussi
+- `REFUSED` / `CANCELLED` / `FAILED` : Paiement échoué
+- `PENDING` / `WAITING` : Paiement en attente 

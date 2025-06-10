@@ -13,7 +13,7 @@ const ticketSchema = new mongoose.Schema({
   ticketNumber: {
     type: String,
     unique: true,
-    required: true
+    sparse: true  // Permet aux valeurs null/undefined d'exister temporairement
   },
   subject: {
     type: String,
@@ -123,6 +123,34 @@ const ticketSchema = new mongoose.Schema({
       type: mongoose.Schema.ObjectId,
       ref: 'User'
     }
+  }],
+
+  // Commentaires et réponses
+  comments: [{
+    content: {
+      type: String,
+      required: true,
+      maxlength: [1000, 'Le commentaire ne peut pas dépasser 1000 caractères']
+    },
+    author: {
+      type: mongoose.Schema.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    isInternal: {
+      type: Boolean,
+      default: false
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    attachments: [{
+      filename: String,
+      url: String,
+      size: Number,
+      mimeType: String
+    }]
   }],
   
   // Tags pour la catégorisation
@@ -283,27 +311,44 @@ ticketSchema.virtual('timeSinceLastActivity').get(function() {
 
 // Middleware pre-save pour générer le numéro de ticket
 ticketSchema.pre('save', async function(next) {
-  if (this.isNew && !this.ticketNumber) {
-    const year = new Date().getFullYear();
-    const month = String(new Date().getMonth() + 1).padStart(2, '0');
-    
-    // Compter les tickets du mois
-    const count = await this.constructor.countDocuments({
-      createdAt: {
-        $gte: new Date(year, new Date().getMonth(), 1),
-        $lt: new Date(year, new Date().getMonth() + 1, 1)
+  try {
+    if (this.isNew && !this.ticketNumber) {
+      const year = new Date().getFullYear();
+      const month = String(new Date().getMonth() + 1).padStart(2, '0');
+      
+      // Compter les tickets du mois avec gestion d'erreur
+      let count = 0;
+      try {
+        count = await this.constructor.countDocuments({
+          createdAt: {
+            $gte: new Date(year, new Date().getMonth(), 1),
+            $lt: new Date(year, new Date().getMonth() + 1, 1)
+          }
+        });
+      } catch (countError) {
+        console.warn('Erreur lors du comptage des tickets, utilisation d\'un timestamp:', countError);
+        // Fallback: utiliser timestamp si le comptage échoue
+        count = Date.now() % 10000;
       }
-    });
+      
+      this.ticketNumber = `TIC-${year}${month}-${String(count + 1).padStart(4, '0')}`;
+    }
     
-    this.ticketNumber = `TIC-${year}${month}-${String(count + 1).padStart(4, '0')}`;
+    // Calculer les SLA
+    if (this.isNew) {
+      this.calculateSLA();
+    }
+    
+    next();
+  } catch (error) {
+    console.error('Erreur dans le middleware pre-save du ticket:', error);
+    // Générer un ticketNumber d'urgence si tout échoue
+    if (this.isNew && !this.ticketNumber) {
+      const timestamp = Date.now().toString(36);
+      this.ticketNumber = `TIC-URGENT-${timestamp}`;
+    }
+    next(error);
   }
-  
-  // Calculer les SLA
-  if (this.isNew) {
-    this.calculateSLA();
-  }
-  
-  next();
 });
 
 // Méthode pour calculer les SLA

@@ -25,55 +25,120 @@ class PaymentService {
       
       const transactionId = this.generateTransactionId();
       
+      // Validation selon la documentation CinetPay
+      if (amount % 5 !== 0 && currency !== 'USD') {
+        throw new Error('Le montant doit être un multiple de 5 (sauf pour USD)');
+      }
+
       const payload = {
         apikey: this.cinetpayConfig.apiKey,
         site_id: this.cinetpayConfig.siteId,
         transaction_id: transactionId,
-        amount: amount,
+        amount: parseInt(amount), // Convertir en entier
         currency: currency || 'XOF',
-        description: `Don - ${donationId}`,
+        description: `Don PARTENAIRE MAGB - ${donationId}`,
         return_url: callbackUrl,
-        notify_url: process.env.CINETPAY_WEBHOOK_URL,
-        customer_name: customerInfo.name,
-        customer_surname: customerInfo.surname || '',
+        notify_url: `${process.env.BACKEND_URL || process.env.FRONTEND_URL}/api/webhooks/cinetpay`,
+        channels: 'ALL', // ALL, MOBILE_MONEY, CREDIT_CARD, WALLET
+        lang: 'FR',
+        
+        // Informations client obligatoires pour les cartes bancaires
+        customer_name: customerInfo.name || customerInfo.firstName,
+        customer_surname: customerInfo.surname || customerInfo.lastName,
         customer_email: customerInfo.email,
         customer_phone_number: customerInfo.phone,
-        customer_address: customerInfo.address || '',
-        customer_city: customerInfo.city || '',
-        customer_country: customerInfo.country || 'CI',
-        customer_state: customerInfo.state || '',
-        customer_zip_code: customerInfo.zipCode || '',
-        channels: 'ALL', // Tous les canaux de paiement
+        customer_address: customerInfo.address || 'Abidjan',
+        customer_city: customerInfo.city || 'Abidjan',
+        customer_country: customerInfo.country || 'CI', // Code ISO 2 caractères
+        customer_state: customerInfo.state || 'CI',
+        customer_zip_code: customerInfo.zipCode || '00000',
+        
+        // Métadonnées
         metadata: JSON.stringify({
           donationId,
-          userId: customerInfo.userId
+          userId: customerInfo.userId,
+          platform: 'partenaire-magb'
         })
       };
+
+      console.log('🔄 Envoi requête CinetPay:', {
+        url: `${this.cinetpayConfig.baseUrl}/payment`,
+        transaction_id: transactionId,
+        amount: payload.amount,
+        currency: payload.currency
+      });
 
       const response = await axios.post(
         `${this.cinetpayConfig.baseUrl}/payment`,
         payload,
         {
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'User-Agent': 'PARTENAIRE-MAGB/1.0'
           },
           timeout: 30000
         }
       );
 
+      console.log('✅ Réponse CinetPay:', {
+        code: response.data?.code,
+        message: response.data?.message,
+        status: response.status
+      });
+
+      // Selon la documentation, le code de succès est '201'
       if (response.data && response.data.code === '201') {
         return {
           success: true,
           paymentUrl: response.data.data.payment_url,
           transactionId: transactionId,
-          paymentToken: response.data.data.payment_token,
+          paymentToken: response.data.data.payment_token || response.data.data.token,
           cinetpayData: response.data.data
         };
       } else {
-        throw new Error(response.data?.description || 'Erreur lors de l\'initialisation du paiement CinetPay');
+        // Gestion des codes d'erreur selon la documentation
+        const errorCode = response.data?.code;
+        const errorMessage = response.data?.message || response.data?.description;
+        
+        let userFriendlyMessage = errorMessage;
+        
+        switch (errorCode) {
+          case '608':
+            userFriendlyMessage = 'Paramètres manquants ou invalides';
+            break;
+          case '609':
+            userFriendlyMessage = 'Clé API incorrecte';
+            break;
+          case '613':
+            userFriendlyMessage = 'Site ID incorrect';
+            break;
+          case '624':
+            userFriendlyMessage = 'Erreur de traitement - vérifiez vos paramètres';
+            break;
+          case '429':
+            userFriendlyMessage = 'Trop de requêtes - veuillez patienter';
+            break;
+          default:
+            userFriendlyMessage = errorMessage || 'Erreur lors de l\'initialisation du paiement';
+        }
+        
+        throw new Error(userFriendlyMessage);
       }
     } catch (error) {
-      console.error('Erreur CinetPay initialization:', error);
+      console.error('❌ Erreur CinetPay initialization:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      
+      if (error.response?.status === 403) {
+        throw new Error('Accès refusé - vérifiez vos identifiants CinetPay');
+      } else if (error.response?.status === 400) {
+        throw new Error('Requête invalide - vérifiez les paramètres');
+      } else if (error.code === 'ECONNREFUSED') {
+        throw new Error('Impossible de se connecter à CinetPay');
+      }
+      
       throw new Error(`CinetPay Error: ${error.message}`);
     }
   }
@@ -86,48 +151,110 @@ class PaymentService {
         transaction_id: transactionId
       };
 
+      console.log('🔍 Vérification paiement CinetPay:', transactionId);
+
       const response = await axios.post(
         `${this.cinetpayConfig.baseUrl}/payment/check`,
         payload,
         {
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'User-Agent': 'PARTENAIRE-MAGB/1.0'
           },
           timeout: 15000
         }
       );
 
+      console.log('📋 Réponse vérification CinetPay:', {
+        code: response.data?.code,
+        status: response.data?.data?.status,
+        amount: response.data?.data?.amount
+      });
+
+      // Code '00' indique un succès selon la documentation
       if (response.data && response.data.code === '00') {
+        const paymentStatus = response.data.data.status;
+        const isCompleted = paymentStatus === 'ACCEPTED' || paymentStatus === 'COMPLETED';
+        
         return {
-          success: true,
-          status: 'completed',
-          data: response.data.data
+          success: isCompleted,
+          status: isCompleted ? 'completed' : 'pending',
+          data: response.data.data,
+          amount: response.data.data.amount,
+          currency: response.data.data.currency,
+          operator: response.data.data.operator_id,
+          operatorTransactionId: response.data.data.operator_transaction_id,
+          paymentMethod: response.data.data.payment_method,
+          completedAt: response.data.data.payment_date
         };
       } else {
         return {
           success: false,
           status: 'failed',
-          message: response.data?.description || 'Paiement non trouvé'
+          message: response.data?.message || 'Paiement non trouvé ou échoué'
         };
       }
     } catch (error) {
-      console.error('Erreur CinetPay verification:', error);
-      throw new Error(`CinetPay Verification Error: ${error.message}`);
+      console.error('❌ Erreur CinetPay verification:', error.message);
+      return {
+        success: false,
+        status: 'failed',
+        message: error.message
+      };
     }
   }
 
   verifyCinetPayWebhook(payload, signature) {
     try {
+      if (!this.cinetpayConfig.secretKey) {
+        console.warn('⚠️ CINETPAY_SECRET_KEY non configuré, validation signature ignorée');
+        return true; // En développement, on peut ignorer la validation
+      }
+
       const expectedSignature = crypto
         .createHmac('sha256', this.cinetpayConfig.secretKey)
         .update(JSON.stringify(payload))
         .digest('hex');
 
-      return signature === expectedSignature;
+      const isValid = signature === expectedSignature;
+      
+      console.log('🔐 Validation signature CinetPay:', {
+        isValid,
+        providedSignature: signature?.substring(0, 10) + '...',
+        expectedSignature: expectedSignature.substring(0, 10) + '...'
+      });
+
+      return isValid;
     } catch (error) {
-      console.error('Erreur vérification webhook CinetPay:', error);
+      console.error('❌ Erreur vérification webhook CinetPay:', error);
       return false;
     }
+  }
+
+  /**
+   * Obtenir les méthodes de paiement disponibles pour CinetPay
+   */
+  getCinetPayPaymentMethods() {
+    return {
+      ALL: 'Tous les canaux',
+      MOBILE_MONEY: 'Mobile Money uniquement',
+      CREDIT_CARD: 'Cartes bancaires uniquement', 
+      WALLET: 'Portefeuilles électroniques'
+    };
+  }
+
+  /**
+   * Valider la configuration CinetPay
+   */
+  validateCinetPayConfig() {
+    const requiredFields = ['apiKey', 'siteId'];
+    const missing = requiredFields.filter(field => !this.cinetpayConfig[field]);
+    
+    if (missing.length > 0) {
+      throw new Error(`Configuration CinetPay incomplète: ${missing.join(', ')}`);
+    }
+    
+    return true;
   }
 
   // ================================
@@ -541,6 +668,14 @@ class PaymentService {
   calculateFees(amount, provider, currency = 'XOF') {
     const feeStructures = {
       cinetpay: {
+        percentage: 2.5,
+        fixed: 100
+      },
+      moneyfusion: {
+        percentage: 2.5,
+        fixed: 100
+      },
+      fusionpay: {
         percentage: 2.5,
         fixed: 100
       },

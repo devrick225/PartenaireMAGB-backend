@@ -11,7 +11,10 @@ const {
   closeTicket,
   escalateTicket,
   addTicketRating,
-  getTicketStats
+  getTicketStats,
+  addTicketComment,
+  getTicketComments,
+  uploadTicketAttachment
 } = require('../controllers/ticketController');
 
 const router = express.Router();
@@ -147,5 +150,23 @@ router.post('/:id/escalate', authenticateToken, authorizeRoles('admin', 'moderat
 
 // POST /api/tickets/:id/rating - Évaluer le support (utilisateur seulement, ticket résolu)
 router.post('/:id/rating', authenticateToken, ratingValidation, addTicketRating);
+
+// POST /api/tickets/:id/comments - Ajouter un commentaire
+router.post('/:id/comments', authenticateToken, [
+  body('comment')
+    .notEmpty()
+    .isLength({ min: 5, max: 1000 })
+    .withMessage('Le commentaire doit contenir entre 5 et 1000 caractères'),
+  body('isInternal')
+    .optional()
+    .isBoolean()
+    .withMessage('isInternal doit être un booléen')
+], addTicketComment);
+
+// POST /api/tickets/:id/attachments - Upload de pièce jointe
+router.post('/:id/attachments', authenticateToken, uploadTicketAttachment);
+
+// GET /api/tickets/:id/comments - Obtenir les commentaires d'un ticket
+router.get('/:id/comments', authenticateToken, getTicketComments);
 
 module.exports = router; 

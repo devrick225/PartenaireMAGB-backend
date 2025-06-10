@@ -13,7 +13,8 @@ const {
   uploadAvatar,
   updateUserPreferences,
   deleteUserAccount,
-  getLeaderboard
+  getLeaderboard,
+  downloadPersonalData
 } = require('../controllers/userController');
 
 const router = express.Router();
@@ -202,5 +203,8 @@ router.get('/:id/donations', authenticateToken, authorizeOwnerOrAdmin, [
 
 // GET /api/users/:id/stats - Statistiques d'un utilisateur
 router.get('/:id/stats', authenticateToken, authorizeOwnerOrAdmin, getUserStats);
+
+// GET /api/users/profile/download-data - Télécharger les données personnelles
+router.get('/profile/download-data', authenticateToken, downloadPersonalData);
 
 module.exports = router; 

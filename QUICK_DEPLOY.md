@@ -88,6 +88,14 @@ git push origin main
 | `EMAIL_PASS` | `your-app-password` | ✅ |
 | `FRONTEND_URL` | `https://your-frontend.vercel.app` | ✅ |
 | `NODE_ENV` | `production` | ✅ |
+| `FUSIONPAY_PUBLIC_KEY` | `fp_pub_xxx` | ⚡ |
+| `FUSIONPAY_SECRET_KEY` | `fp_sec_xxx` | ⚡ |
+| `FUSIONPAY_WEBHOOK_SECRET` | `fp_wh_xxx` | ⚡ |
+| `MONEYFUSION_API_URL` | `https://www.pay.moneyfusion.net/api/v1/payment` | 🌟 |
+| `MONEYFUSION_ENVIRONMENT` | `production` | 🌟 |
+
+**⚡ = Optionnel pour FusionPay**  
+**🌟 = Optionnel pour MoneyFusion**
 
 ## 🚨 Dépannage rapide
 

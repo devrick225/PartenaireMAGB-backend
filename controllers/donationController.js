@@ -10,12 +10,21 @@ const emailService = require('../services/emailService');
 // @access  Private
 const getDonations = async (req, res) => {
   try {
-    const { page = 1, limit = 10, status, category, type } = req.query;
+    const { page = 1, limit = 10, status, category, type, includeAll } = req.query;
     const userId = req.user.id;
 
-    // Construction du filtre
+    // Construction du filtre - par défaut, ne montrer que les donations complétées
     const filter = { user: userId };
-    if (status) filter.status = status;
+    
+    // Si includeAll=true est explicitement passé, montrer toutes les donations
+    // Sinon, ne montrer que les donations complétées pour éviter la confusion financière
+    if (includeAll === 'true') {
+      if (status) filter.status = status;
+    } else {
+      // Par défaut, ne montrer que les donations complétées
+      filter.status = status || 'completed';
+    }
+    
     if (category) filter.category = category;
     if (type) filter.type = type;
 
@@ -276,115 +285,115 @@ const cancelRecurringDonation = async (req, res) => {
 // @route   GET /api/donations/stats
 // @access  Private
 const getDonationStats = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { period = 'all' } = req.query;
-
-    // Construire le filtre de date
-    let dateFilter = {};
-    const now = new Date();
-    
-    switch (period) {
-      case 'week':
-        dateFilter = { 
-          createdAt: { 
-            $gte: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7) 
-          } 
-        };
-        break;
-      case 'month':
-        dateFilter = { 
-          createdAt: { 
-            $gte: new Date(now.getFullYear(), now.getMonth(), 1) 
-          } 
-        };
-        break;
-      case 'year':
-        dateFilter = { 
-          createdAt: { 
-            $gte: new Date(now.getFullYear(), 0, 1) 
-          } 
-        };
-        break;
+    try {
+      const userId = req.user.id;
+      const { period = 'all' } = req.query;
+  
+      // Construire le filtre de date
+      let dateFilter = {};
+      const now = new Date();
+      
+      switch (period) {
+        case 'week':
+          dateFilter = { 
+            createdAt: { 
+              $gte: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7) 
+            } 
+          };
+          break;
+        case 'month':
+          dateFilter = { 
+            createdAt: { 
+              $gte: new Date(now.getFullYear(), now.getMonth(), 1) 
+            } 
+          };
+          break;
+        case 'year':
+          dateFilter = { 
+            createdAt: { 
+              $gte: new Date(now.getFullYear(), 0, 1) 
+            } 
+          };
+          break;
+      }
+  
+      const baseFilter = { 
+        user: new mongoose.Types.ObjectId(userId), // ✅ CORRECTION ICI
+        status: 'completed',
+        ...dateFilter 
+      };
+  
+      // Statistiques générales
+      const [generalStats] = await Donation.aggregate([
+        { $match: baseFilter },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: '$amount' },
+            totalCount: { $sum: 1 },
+            averageAmount: { $avg: '$amount' }
+          }
+        }
+      ]);
+  
+      // Répartition par catégorie
+      const categoryStats = await Donation.aggregate([
+        { $match: baseFilter },
+        {
+          $group: {
+            _id: '$category',
+            count: { $sum: 1 },
+            totalAmount: { $sum: '$amount' }
+          }
+        },
+        { $sort: { totalAmount: -1 } }
+      ]);
+  
+      // Évolution mensuelle
+      const monthlyStats = await Donation.aggregate([
+        { $match: { user: new mongoose.Types.ObjectId(userId), status: 'completed' } }, // ✅ CORRECTION ICI
+        {
+          $group: {
+            _id: {
+              year: { $year: '$createdAt' },
+              month: { $month: '$createdAt' }
+            },
+            count: { $sum: 1 },
+            totalAmount: { $sum: '$amount' }
+          }
+        },
+        { $sort: { '_id.year': 1, '_id.month': 1 } },
+        { $limit: 12 }
+      ]);
+  
+      // Dons récurrents actifs
+      const activeRecurringCount = await Donation.countDocuments({
+        user: new mongoose.Types.ObjectId(userId), // ✅ CORRECTION ICI
+        type: 'recurring',
+        'recurring.isActive': true
+      });
+  
+      res.json({
+        success: true,
+        data: {
+          stats: {
+            totalAmount: generalStats?.totalAmount || 0,
+            totalCount: generalStats?.totalCount || 0,
+            averageAmount: generalStats?.averageAmount || 0,
+            activeRecurringDonations: activeRecurringCount,
+            categoriesBreakdown: categoryStats,
+            monthlyEvolution: monthlyStats
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Erreur getDonationStats:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la récupération des statistiques'
+      });
     }
-
-    const baseFilter = { 
-      user: userId, 
-      status: 'completed',
-      ...dateFilter 
-    };
-
-    // Statistiques générales
-    const [generalStats] = await Donation.aggregate([
-      { $match: baseFilter },
-      {
-        $group: {
-          _id: null,
-          totalAmount: { $sum: '$amount' },
-          totalCount: { $sum: 1 },
-          averageAmount: { $avg: '$amount' }
-        }
-      }
-    ]);
-
-    // Répartition par catégorie
-    const categoryStats = await Donation.aggregate([
-      { $match: baseFilter },
-      {
-        $group: {
-          _id: '$category',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$amount' }
-        }
-      },
-      { $sort: { totalAmount: -1 } }
-    ]);
-
-    // Évolution mensuelle
-    const monthlyStats = await Donation.aggregate([
-      { $match: { user: mongoose.Types.ObjectId(userId), status: 'completed' } },
-      {
-        $group: {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' }
-          },
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$amount' }
-        }
-      },
-      { $sort: { '_id.year': 1, '_id.month': 1 } },
-      { $limit: 12 }
-    ]);
-
-    // Dons récurrents actifs
-    const activeRecurringCount = await Donation.countDocuments({
-      user: userId,
-      type: 'recurring',
-      'recurring.isActive': true
-    });
-
-    res.json({
-      success: true,
-      data: {
-        stats: {
-          totalAmount: generalStats?.totalAmount || 0,
-          totalCount: generalStats?.totalCount || 0,
-          averageAmount: generalStats?.averageAmount || 0,
-          activeRecurringDonations: activeRecurringCount,
-          categoriesBreakdown: categoryStats,
-          monthlyEvolution: monthlyStats
-        }
-      }
-    });
-  } catch (error) {
-    console.error('Erreur getDonationStats:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors de la récupération des statistiques'
-    });
-  }
-};
+  };
 
 // @desc    Modifier un don (admin seulement)
 // @route   PUT /api/donations/:id
@@ -497,7 +506,54 @@ const processRecurringDonations = async () => {
     console.error('Erreur processRecurringDonations:', error);
     throw error;
   }
-};
+}
+// @desc    Obtenir les donations récurrentes
+// @route   GET /api/donations/recurring
+// @access  Private
+const getRecurringDonations = async (req, res) => {
+    try {
+      const { page = 1, limit = 10 } = req.query;
+      const userId = req.user.id;
+  
+      // Filtrer les donations récurrentes de l'utilisateur
+      const filter = { 
+        user: userId, 
+        type: 'recurring' 
+      };
+  
+      // Options de pagination
+      const options = {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        sort: { createdAt: -1 },
+        populate: [
+          { path: 'user', select: 'firstName lastName email' }
+        ]
+      };
+  
+      const donations = await Donation.paginate(filter, options);
+  
+      res.json({
+        success: true,
+        data: {
+          donations: donations.docs,
+          pagination: {
+            current: donations.page,
+            total: donations.totalPages,
+            pages: donations.totalPages,
+            limit: donations.limit,
+            totalDocs: donations.totalDocs
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Erreur getRecurringDonations:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la récupération des donations récurrentes'
+      });
+    }
+  };
 
 module.exports = {
   getDonations,
@@ -506,5 +562,6 @@ module.exports = {
   cancelRecurringDonation,
   getDonationStats,
   updateDonation,
-  processRecurringDonations
+  processRecurringDonations,
+  getRecurringDonations
 }; 

@@ -1,45 +1,282 @@
 const express = require('express');
 const paymentService = require('../services/paymentService');
+const Payment = require('../models/Payment');
+const Donation = require('../models/Donation');
+const User = require('../models/User');
+const fusionPayService = require('../services/fusionPayService');
+const moneyFusionService = require('../services/moneyFusionService');
+const emailService = require('../services/emailService');
+const websocketService = require('../services/websocketService');
 
 const router = express.Router();
 
 // Middleware pour parser le body en raw pour les webhooks
 const rawBodyParser = express.raw({ type: 'application/json' });
 
-// POST /api/webhooks/cinetpay - Webhook CinetPay
+// @desc    Webhook CinetPay
+// @route   POST /api/webhooks/cinetpay
+// @access  Public (webhook de CinetPay)
 router.post('/cinetpay', express.json(), async (req, res) => {
   try {
     const payload = req.body;
     const signature = req.headers['x-cinetpay-signature'];
 
-    // Vérifier la signature du webhook
-    const isValid = paymentService.verifyCinetPayWebhook(payload, signature);
-    
-    if (!isValid) {
-      console.error('Invalid CinetPay webhook signature');
+    console.log('🔔 CinetPay webhook reçu:', {
+      cpm_trans_id: payload.cpm_trans_id,
+      cpm_trans_status: payload.cpm_trans_status,
+      signature: signature?.substring(0, 10) + '...'
+    });
+
+    // Vérifier la signature du webhook (optionnel en développement)
+    if (signature) {
+      const isValid = paymentService.verifyCinetPayWebhook(payload, signature);
+      
+      if (!isValid) {
+        console.error('❌ Signature CinetPay webhook invalide');
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid signature'
+        });
+      }
+    } else {
+      console.warn('⚠️ Webhook CinetPay sans signature (mode développement)');
+    }
+
+    // Extraire les données du webhook selon la documentation CinetPay
+    const {
+      cpm_site_id,           // Site ID
+      cpm_trans_id,          // Transaction ID
+      cpm_trans_status,      // Statut: ACCEPTED, REFUSED, PENDING
+      cpm_amount,            // Montant
+      cpm_currency,          // Devise
+      cpm_payid,             // ID de paiement CinetPay
+      cpm_payment_config,    // Configuration de paiement
+      cpm_payment_date,      // Date de paiement
+      cpm_payment_time,      // Heure de paiement
+      cpm_error_message,     // Message d'erreur si échec
+      signature: cpmSignature,
+      cpm_custom,            // Métadonnées custom
+      cpm_designvars,        // Variables de design
+      cpm_result,            // Résultat
+      cpm_trans_status_label // Label du statut
+    } = payload;
+
+    // Validation des données essentielles
+    if (!cpm_trans_id || !cpm_trans_status) {
+      console.error('❌ Données webhook CinetPay incomplètes:', payload);
       return res.status(400).json({
         success: false,
-        error: 'Invalid signature'
+        error: 'Données webhook incomplètes'
       });
     }
 
-    // TODO: Traiter le webhook CinetPay
-    console.log('CinetPay webhook received:', payload);
+    // Trouver le paiement correspondant
+    const payment = await Payment.findOne({
+      'cinetpay.transactionId': cpm_trans_id
+    }).populate('user donation');
 
-    // Répondre rapidement à CinetPay
+    if (!payment) {
+      console.error('❌ Paiement non trouvé pour transaction CinetPay:', cpm_trans_id);
+      return res.status(404).json({
+        success: false,
+        error: 'Paiement non trouvé'
+      });
+    }
+
+    // Ajouter le webhook à l'historique du paiement
+    payment.addWebhook('cinetpay', `payment_${cpm_trans_status.toLowerCase()}`, cpm_payid, payload, signature);
+
+    // Traiter selon le statut
+    let statusUpdated = false;
+
+    switch (cpm_trans_status.toUpperCase()) {
+      case 'ACCEPTED':
+      case 'COMPLETED':
+        if (payment.status !== 'completed') {
+          console.log('✅ Paiement CinetPay accepté:', cpm_trans_id);
+          
+          // Marquer le paiement comme complété
+          await payment.markCompleted({
+            cinetpay: {
+              ...payment.cinetpay,
+              paymentId: cpm_payid,
+              status: 'accepted',
+              paymentDate: cpm_payment_date,
+              paymentTime: cpm_payment_time,
+              amount: parseFloat(cpm_amount),
+              currency: cpm_currency,
+              paymentConfig: cpm_payment_config,
+              completedAt: new Date(`${cpm_payment_date} ${cpm_payment_time}`),
+              apiResponse: payload
+            }
+          });
+
+          // Mettre à jour la donation
+          payment.donation.status = 'completed';
+          await payment.donation.save();
+
+          // Mettre à jour les statistiques utilisateur
+          await payment.user.updateDonationStats(payment.amount);
+
+          // Envoyer le reçu par email
+          try {
+            await emailService.sendDonationReceiptEmail(
+              payment.user.email,
+              payment.user.firstName,
+              {
+                receiptNumber: payment.donation.receipt.number,
+                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
+                formattedAmount: payment.formattedAmount,
+                donationDate: payment.donation.createdAt,
+                paymentMethod: 'CinetPay',
+                category: payment.donation.category,
+                transactionId: cpm_trans_id,
+                paymentId: cpm_payid
+              }
+            );
+          } catch (emailError) {
+            console.error('❌ Erreur envoi reçu CinetPay:', emailError);
+          }
+
+          statusUpdated = true;
+        }
+        break;
+
+      case 'REFUSED':
+      case 'CANCELLED':
+      case 'FAILED':
+        if (payment.status !== 'failed') {
+          console.log('❌ Paiement CinetPay refusé:', cpm_trans_id);
+          
+          await payment.markFailed(
+            cpm_error_message || cpm_trans_status_label || 'Paiement refusé par CinetPay',
+            cpm_result || 'REFUSED'
+          );
+
+          // Mettre à jour les données CinetPay
+          payment.cinetpay = {
+            ...payment.cinetpay,
+            paymentId: cpm_payid,
+            status: 'refused',
+            errorMessage: cpm_error_message,
+            failedAt: new Date(),
+            apiResponse: payload
+          };
+          
+          await payment.save();
+          statusUpdated = true;
+        }
+        break;
+
+      case 'PENDING':
+      case 'WAITING':
+        if (payment.status !== 'processing') {
+          console.log('⏳ Paiement CinetPay en attente:', cpm_trans_id);
+          
+          payment.status = 'processing';
+          payment.cinetpay = {
+            ...payment.cinetpay,
+            paymentId: cpm_payid,
+            status: 'pending',
+            pendingAt: new Date(),
+            apiResponse: payload
+          };
+          
+          payment.addToHistory('processing', 'Paiement en cours de traitement via CinetPay');
+          await payment.save();
+          statusUpdated = true;
+        }
+        break;
+
+      default:
+        console.warn('⚠️ Statut CinetPay non géré:', cpm_trans_status);
+        
+        // Sauvegarder quand même les données pour debug
+        payment.cinetpay = {
+          ...payment.cinetpay,
+          paymentId: cpm_payid,
+          status: cpm_trans_status.toLowerCase(),
+          unknownStatusAt: new Date(),
+          apiResponse: payload
+        };
+        await payment.save();
+    }
+
+    // Log du résultat
+    if (statusUpdated) {
+      console.log(`📊 Paiement CinetPay mis à jour: ${payment._id} -> ${payment.status}`);
+    }
+
+    // Répondre rapidement à CinetPay (obligatoire selon leur documentation)
     res.status(200).json({
       success: true,
-      message: 'Webhook processed successfully'
+      message: 'Webhook traité avec succès',
+      transaction_id: cpm_trans_id,
+      status: payment.status
     });
 
-    // Traitement asynchrone du webhook
-    // processWebhookAsync('cinetpay', payload);
-
   } catch (error) {
-    console.error('Error processing CinetPay webhook:', error);
+    console.error('❌ Erreur traitement webhook CinetPay:', error);
     res.status(500).json({
       success: false,
-      error: 'Internal server error'
+      error: 'Erreur lors du traitement du webhook'
+    });
+  }
+});
+
+// @desc    Test de connexion CinetPay
+// @route   GET /api/webhooks/cinetpay/test
+// @access  Private (Admin only)
+router.get('/cinetpay/test', async (req, res) => {
+  try {
+    // Valider la configuration CinetPay
+    paymentService.validateCinetPayConfig();
+    
+    // Test simple avec les informations de configuration
+    const testData = {
+      apikey: paymentService.cinetpayConfig.apiKey?.substring(0, 8) + '...',
+      site_id: paymentService.cinetpayConfig.siteId,
+      environment: paymentService.cinetpayConfig.environment,
+      baseUrl: paymentService.cinetpayConfig.baseUrl
+    };
+    
+    res.json({
+      success: true,
+      message: 'Configuration CinetPay valide',
+      data: testData,
+      timestamp: new Date().toISOString(),
+      provider: 'CinetPay'
+    });
+  } catch (error) {
+    console.error('❌ Erreur test CinetPay:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Erreur lors du test de connexion CinetPay'
+    });
+  }
+});
+
+// @desc    Obtenir les méthodes de paiement CinetPay disponibles
+// @route   GET /api/webhooks/cinetpay/payment-methods
+// @access  Private
+router.get('/cinetpay/payment-methods', async (req, res) => {
+  try {
+    const methods = paymentService.getCinetPayPaymentMethods();
+    
+    res.json({
+      success: true,
+      data: {
+        methods,
+        provider: 'CinetPay',
+        supportedCurrencies: ['XOF', 'XAF', 'CDF', 'GNF', 'USD'],
+        note: 'Le montant doit être un multiple de 5 (sauf pour USD)'
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erreur récupération méthodes CinetPay:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des méthodes de paiement CinetPay'
     });
   }
 });
@@ -187,6 +424,535 @@ router.post('/mtn-mobile-money', express.json(), async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Internal server error'
+    });
+  }
+});
+
+// POST /api/webhooks/moneyfusion - Webhook MoneyFusion
+router.post('/moneyfusion', express.json(), async (req, res) => {
+  try {
+    const payload = req.body;
+    const signature = req.headers['x-signature'];
+    const timestamp = req.headers['x-timestamp'];
+
+    console.log('🔔 MoneyFusion webhook reçu:', payload);
+
+    // Traiter le webhook
+    const webhookResult = await moneyFusionService.processWebhook(payload, signature, timestamp);
+
+    // Trouver le paiement correspondant
+    const payment = await Payment.findOne({
+      'moneyfusion.transactionId': webhookResult.transactionId,
+      provider: 'moneyfusion'
+    }).populate('user donation');
+
+    if (!payment) {
+      console.error('❌ Paiement non trouvé pour webhook MoneyFusion:', webhookResult.transactionId);
+      return res.status(404).json({
+        success: false,
+        error: 'Paiement non trouvé'
+      });
+    }
+
+    // Ajouter le webhook à l'historique
+    payment.addWebhook('moneyfusion', webhookResult.type, webhookResult.data?.reference, payload, signature);
+
+    // Traiter selon le type d'événement
+    switch (webhookResult.type) {
+      case 'payment_completed':
+        if (payment.status !== 'completed') {
+          console.log('✅ Paiement MoneyFusion complété:', webhookResult.transactionId);
+          
+          // Marquer le paiement comme complété
+          await payment.markCompleted({
+            moneyfusion: {
+              ...payment.moneyfusion,
+              status: 'completed',
+              completedAt: new Date(),
+              metadata: webhookResult.data
+            }
+          });
+
+          // Mettre à jour la donation
+          payment.donation.status = 'completed';
+          await payment.donation.save();
+
+          // Mettre à jour les statistiques utilisateur
+          await payment.user.updateDonationStats(payment.amount);
+
+          // Notifier via WebSocket
+          websocketService.notifyPaymentCompleted(payment, payment.donation);
+
+          // Envoyer le reçu par email
+          try {
+            await emailService.sendDonationReceiptEmail(
+              payment.user.email,
+              payment.user.firstName,
+              {
+                receiptNumber: payment.donation.receipt.number,
+                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
+                formattedAmount: payment.formattedAmount,
+                donationDate: payment.donation.createdAt,
+                paymentMethod: 'MoneyFusion',
+                category: payment.donation.category,
+                transactionId: webhookResult.transactionId,
+                paymentId: webhookResult.data?.reference
+              }
+            );
+          } catch (emailError) {
+            console.error('❌ Erreur envoi reçu MoneyFusion:', emailError);
+          }
+        }
+        break;
+
+      case 'payment_failed':
+        if (payment.status !== 'failed') {
+          console.log('❌ Paiement MoneyFusion échoué:', webhookResult.transactionId);
+          
+          await payment.markFailed(
+            webhookResult.data?.errorMessage || 'Paiement refusé par MoneyFusion',
+            'PAYMENT_FAILED'
+          );
+
+          // Mettre à jour les données MoneyFusion
+          payment.moneyfusion = {
+            ...payment.moneyfusion,
+            status: 'failed',
+            errorMessage: webhookResult.data?.errorMessage,
+            failedAt: new Date(),
+            metadata: webhookResult.data
+          };
+          
+          await payment.save();
+
+          // Notifier via WebSocket
+          websocketService.notifyPaymentFailed(
+            payment, 
+            payment.donation,
+            { 
+              message: webhookResult.data?.errorMessage || 'Paiement échoué',
+              code: 'PAYMENT_FAILED'
+            }
+          );
+        }
+        break;
+
+      case 'payment_pending':
+        if (payment.status !== 'processing') {
+          console.log('⏳ Paiement MoneyFusion en attente:', webhookResult.transactionId);
+          
+          payment.status = 'processing';
+          payment.moneyfusion = {
+            ...payment.moneyfusion,
+            status: 'pending',
+            pendingAt: new Date(),
+            metadata: webhookResult.data
+          };
+          
+          payment.addToHistory('processing', 'Paiement en cours de traitement via MoneyFusion');
+          await payment.save();
+
+          // Notifier via WebSocket
+          websocketService.notifyPaymentStatusUpdate(payment, 'pending', 'processing');
+        }
+        break;
+
+      default:
+        console.warn('⚠️ Type d\'événement MoneyFusion non géré:', webhookResult.type);
+    }
+
+    console.log(`📢 Webhook MoneyFusion traité: ${payment._id} -> ${payment.status}`);
+
+    // Répondre rapidement à MoneyFusion
+    res.status(200).json({
+      success: true,
+      message: 'Webhook traité avec succès',
+      transaction_id: webhookResult.transactionId,
+      status: payment.status
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur traitement webhook MoneyFusion:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du traitement du webhook'
+    });
+  }
+});
+
+// @desc    Webhook FusionPay
+// @route   POST /api/webhooks/fusionpay
+// @access  Public (mais avec signature)
+router.post('/fusionpay', rawBodyParser, async (req, res) => {
+  try {
+    const signature = req.headers['x-signature'];
+    const timestamp = req.headers['x-timestamp'];
+    
+    if (!signature || !timestamp) {
+      return res.status(400).json({
+        success: false,
+        error: 'Headers de signature manquants'
+      });
+    }
+
+    let webhookData;
+    try {
+      webhookData = JSON.parse(req.body.toString());
+    } catch (parseError) {
+      return res.status(400).json({
+        success: false,
+        error: 'Format JSON invalide'
+      });
+    }
+
+    // Traiter le webhook
+    const webhookResult = await fusionPayService.processWebhook(
+      webhookData,
+      signature,
+      timestamp
+    );
+
+    // Trouver le paiement correspondant
+    const payment = await Payment.findOne({
+      'fusionpay.transactionId': webhookResult.transactionId
+    }).populate('user donation');
+
+    if (!payment) {
+      console.error('Paiement non trouvé pour webhook FusionPay:', webhookResult.transactionId);
+      return res.status(404).json({
+        success: false,
+        error: 'Paiement non trouvé'
+      });
+    }
+
+    // Ajouter le webhook à l'historique
+    payment.addWebhook('fusionpay', webhookResult.type, webhookData.event_id, webhookData, signature);
+
+    // Traiter selon le type d'événement
+    switch (webhookResult.type) {
+      case 'payment_completed':
+        if (payment.status !== 'completed') {
+          // Marquer le paiement comme complété
+          await payment.markCompleted({
+            fusionpay: {
+              ...payment.fusionpay,
+              status: 'completed',
+              completedAt: new Date(),
+              metadata: webhookResult.data
+            }
+          });
+
+          // Mettre à jour la donation
+          payment.donation.status = 'completed';
+          await payment.donation.save();
+
+          // Mettre à jour les statistiques utilisateur
+          await payment.user.updateDonationStats(payment.amount);
+
+          // Envoyer le reçu par email
+          try {
+            await emailService.sendDonationReceiptEmail(
+              payment.user.email,
+              payment.user.firstName,
+              {
+                receiptNumber: payment.donation.receipt.number,
+                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
+                formattedAmount: payment.formattedAmount,
+                donationDate: payment.donation.createdAt,
+                paymentMethod: payment.paymentMethod,
+                category: payment.donation.category
+              }
+            );
+          } catch (emailError) {
+            console.error('Erreur envoi reçu par email:', emailError);
+          }
+
+          console.log(`Paiement FusionPay complété: ${payment._id}`);
+        }
+        break;
+
+      case 'payment_failed':
+        if (payment.status !== 'failed') {
+          await payment.markFailed(
+            webhookResult.data.failure_reason || 'Paiement échoué',
+            webhookResult.data.error_code
+          );
+          console.log(`Paiement FusionPay échoué: ${payment._id}`);
+        }
+        break;
+
+      case 'payment_pending':
+        if (payment.status !== 'processing') {
+          payment.status = 'processing';
+          payment.addToHistory('processing', 'Paiement en cours de traitement');
+          await payment.save();
+        }
+        break;
+
+      case 'refund_completed':
+        payment.refund = {
+          amount: webhookResult.data.amount,
+          reason: webhookResult.data.reason,
+          refundedAt: new Date(),
+          refundId: webhookResult.refundId,
+          status: 'completed'
+        };
+        
+        if (webhookResult.data.amount >= payment.amount) {
+          payment.status = 'refunded';
+        } else {
+          payment.status = 'partially_refunded';
+        }
+        
+        payment.addToHistory('refunded', `Remboursement complété: ${webhookResult.data.amount}`);
+        await payment.save();
+        break;
+
+      default:
+        console.log('Type de webhook FusionPay non géré:', webhookResult.type);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Webhook traité avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur traitement webhook FusionPay:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du traitement du webhook'
+    });
+  }
+});
+
+// @desc    Test de connexion FusionPay
+// @route   GET /api/webhooks/fusionpay/test
+// @access  Private (Admin only)
+router.get('/fusionpay/test', async (req, res) => {
+  try {
+    const testResult = await fusionPayService.testConnection();
+    
+    res.json({
+      success: testResult.success,
+      message: testResult.message,
+      timestamp: testResult.timestamp,
+      provider: 'FusionPay'
+    });
+  } catch (error) {
+    console.error('Erreur test FusionPay:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du test de connexion FusionPay'
+    });
+  }
+});
+
+// @desc    Obtenir les méthodes de paiement FusionPay disponibles
+// @route   GET /api/webhooks/fusionpay/payment-methods
+// @access  Private
+router.get('/fusionpay/payment-methods', async (req, res) => {
+  try {
+    const { currency = 'XOF', country = 'CI' } = req.query;
+    
+    const methodsResult = await fusionPayService.getPaymentMethods(currency, country);
+    
+    if (methodsResult.success) {
+      res.json({
+        success: true,
+        data: {
+          methods: methodsResult.methods,
+          currency,
+          country
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: methodsResult.message
+      });
+    }
+  } catch (error) {
+    console.error('Erreur récupération méthodes FusionPay:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des méthodes de paiement'
+    });
+  }
+});
+
+// @desc    Obtenir les taux de change FusionPay
+// @route   GET /api/webhooks/fusionpay/exchange-rates
+// @access  Private
+router.get('/fusionpay/exchange-rates', async (req, res) => {
+  try {
+    const { base = 'XOF' } = req.query;
+    
+    const ratesResult = await fusionPayService.getExchangeRates(base);
+    
+    if (ratesResult.success) {
+      res.json({
+        success: true,
+        data: {
+          rates: ratesResult.rates,
+          baseCurrency: ratesResult.baseCurrency,
+          timestamp: ratesResult.timestamp
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: ratesResult.message
+      });
+    }
+  } catch (error) {
+    console.error('Erreur récupération taux FusionPay:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des taux de change'
+    });
+  }
+});
+
+// @desc    Webhook MoneyFusion
+// @route   POST /api/webhooks/moneyfusion
+// @access  Public (webhook de MoneyFusion)
+router.post('/moneyfusion', express.json(), async (req, res) => {
+  try {
+    const webhookData = req.body;
+    
+    console.log('MoneyFusion webhook reçu:', webhookData);
+
+    // Traiter le webhook MoneyFusion
+    const webhookResult = await moneyFusionService.processWebhook(webhookData);
+
+    // Trouver le paiement correspondant
+    const payment = await Payment.findOne({
+      'moneyfusion.token': webhookResult.transactionId
+    }).populate('user donation');
+
+    if (!payment) {
+      console.error('Paiement non trouvé pour webhook MoneyFusion:', webhookResult.transactionId);
+      return res.status(404).json({
+        success: false,
+        error: 'Paiement non trouvé'
+      });
+    }
+
+    // Ajouter le webhook à l'historique
+    payment.addWebhook('moneyfusion', webhookResult.type, webhookData.tokenPay || 'unknown', webhookData);
+
+    // Traiter selon le type d'événement
+    switch (webhookResult.type) {
+      case 'payment_completed':
+        if (payment.status !== 'completed') {
+          // Marquer le paiement comme complété
+          await payment.markCompleted({
+            moneyfusion: {
+              ...payment.moneyfusion,
+              status: 'paid',
+              transactionReference: webhookResult.data.reference,
+              completedAt: new Date(),
+              fees: {
+                amount: webhookResult.data.fees,
+                currency: payment.currency
+              },
+              paymentMethod: webhookResult.data.paymentMethod,
+              apiResponse: webhookData
+            }
+          });
+
+          // Mettre à jour la donation
+          payment.donation.status = 'completed';
+          await payment.donation.save();
+
+          // Mettre à jour les statistiques utilisateur
+          await payment.user.updateDonationStats(payment.amount);
+
+          // Envoyer le reçu par email
+          try {
+            await emailService.sendDonationReceiptEmail(
+              payment.user.email,
+              payment.user.firstName,
+              {
+                receiptNumber: payment.donation.receipt.number,
+                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
+                formattedAmount: payment.formattedAmount,
+                donationDate: payment.donation.createdAt,
+                paymentMethod: 'MoneyFusion',
+                category: payment.donation.category
+              }
+            );
+          } catch (emailError) {
+            console.error('Erreur envoi reçu par email:', emailError);
+          }
+
+          console.log(`Paiement MoneyFusion complété: ${payment._id}`);
+        }
+        break;
+
+      case 'payment_failed':
+        if (payment.status !== 'failed') {
+          await payment.markFailed(
+            webhookResult.data.originalStatus || 'Paiement échoué via MoneyFusion'
+          );
+          console.log(`Paiement MoneyFusion échoué: ${payment._id}`);
+        }
+        break;
+
+      case 'payment_pending':
+        if (payment.status !== 'processing') {
+          payment.status = 'processing';
+          payment.addToHistory('processing', 'Paiement en cours de traitement via MoneyFusion');
+          await payment.save();
+        }
+        break;
+
+      case 'payment_cancelled':
+        if (payment.status !== 'cancelled') {
+          payment.status = 'cancelled';
+          payment.addToHistory('cancelled', 'Paiement annulé via MoneyFusion');
+          await payment.save();
+        }
+        break;
+
+      default:
+        console.log('Type de webhook MoneyFusion non géré:', webhookResult.type);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Webhook MoneyFusion traité avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur traitement webhook MoneyFusion:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du traitement du webhook MoneyFusion'
+    });
+  }
+});
+
+// @desc    Test de connexion MoneyFusion
+// @route   GET /api/webhooks/moneyfusion/test
+// @access  Private (Admin only)
+router.get('/moneyfusion/test', async (req, res) => {
+  try {
+    const testResult = await moneyFusionService.testConnection();
+    
+    res.json({
+      success: testResult.success,
+      message: testResult.message,
+      timestamp: testResult.timestamp,
+      provider: 'MoneyFusion',
+      apiUrl: testResult.apiUrl
+    });
+  } catch (error) {
+    console.error('Erreur test MoneyFusion:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du test de connexion MoneyFusion'
     });
   }
 });

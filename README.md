@@ -19,10 +19,13 @@ Backend API pour l'application de gestion de dons thématiques pour église dév
 - Système de gamification avec points et badges
 
 ### 💳 Intégrations de paiement
-- **CinetPay** - Paiements en Afrique de l'Ouest
+- **CinetPay** - Paiements en Afrique de l'Ouest (conforme documentation officielle v2)
 - **Stripe** - Cartes bancaires internationales
-- **PayPal** - Paiements internationaux
+- **PayPal** - Paiements PayPal
 - **Mobile Money** - Orange Money, MTN Mobile Money, Moov Money
+- **FusionPay** - Cartes, Mobile Money, Crypto, Virements
+- **MoneyFusion** - API fluide avec package NPM officiel
+- **Wave** - Portefeuille mobile Wave
 - Gestion des webhooks et vérifications de sécurité
 - Système de remboursements
 
@@ -380,3 +383,25 @@ Pour toute question ou problème :
 ---
 
 **Développé avec ❤️ pour PARTENAIRE MAGB** 
+
+## 💳 Fournisseurs de paiement supportés
+
+- **CinetPay** - Paiements en Afrique de l'Ouest (conforme documentation officielle v2)
+- **Stripe** - Cartes bancaires internationales  
+- **PayPal** - Paiements PayPal
+- **FusionPay** - Cartes, Mobile Money, Crypto, Virements
+- **MoneyFusion** - API fluide avec package NPM officiel
+- **Orange Money** - Mobile Money Orange
+- **MTN Mobile Money** - Mobile Money MTN
+- **Moov Money** - Mobile Money Moov
+- **Wave** - Portefeuille mobile Wave
+
+### 🎯 Spécificités CinetPay
+
+L'intégration CinetPay est conforme à leur documentation officielle v2 :
+- ✅ **API v2** : `https://api-checkout.cinetpay.com/v2/payment`
+- ✅ **Validation des montants** : Multiple de 5 (sauf USD)
+- ✅ **Devises supportées** : XOF, XAF, CDF, GNF, USD
+- ✅ **Canaux multiples** : ALL, MOBILE_MONEY, CREDIT_CARD, WALLET
+- ✅ **Webhooks complets** : Traitement de tous les statuts
+- ✅ **Gestion d'erreurs** : Codes d'erreur selon documentation
