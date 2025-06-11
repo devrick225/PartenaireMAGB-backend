@@ -63,11 +63,23 @@ const getPaymentsValidation = [
     .withMessage('Fournisseur invalide')
 ];
 
+// Validation pour les statistiques de paiement
+const getPaymentStatsValidation = [
+  query('period')
+    .optional()
+    .isIn(['week', 'month', 'year'])
+    .withMessage('Période invalide. Valeurs acceptées: week, month, year'),
+  query('provider')
+    .optional()
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money'])
+    .withMessage('Fournisseur invalide')
+];
+
 // POST /api/payments/initialize - Initialiser un paiement
 router.post('/initialize', authenticateToken, initializePaymentValidation, initializePayment);
 
-// GET /api/payments/stats - Statistiques des paiements (admin seulement) - doit être avant /:id
-router.get('/stats', authenticateToken, authorizeRoles('admin', 'treasurer'), getPaymentStats);
+// GET /api/payments/stats - Statistiques des paiements (tous les utilisateurs authentifiés)
+router.get('/stats', authenticateToken, getPaymentStatsValidation, getPaymentStats);
 
 // GET /api/payments - Liste des paiements (avec filtres)
 router.get('/', authenticateToken, getPaymentsValidation, getPayments);

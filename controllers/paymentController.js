@@ -510,10 +510,21 @@ const refundPayment = async (req, res) => {
 
 // @desc    Obtenir les statistiques des paiements
 // @route   GET /api/payments/stats
-// @access  Private (Admin/Treasurer)
+// @access  Private (Tous les utilisateurs authentifiés)
 const getPaymentStats = async (req, res) => {
   try {
+    // Vérifier les erreurs de validation
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: errors.array()
+      });
+    }
+
     const { period = 'month', provider } = req.query;
+    const isAdmin = ['admin', 'treasurer'].includes(req.user.role);
 
     // Construire le filtre de date
     let dateFilter = {};
@@ -543,7 +554,12 @@ const getPaymentStats = async (req, res) => {
         break;
     }
 
+    // Filtrer selon le rôle de l'utilisateur
     const baseFilter = { ...dateFilter };
+    if (!isAdmin) {
+      // Utilisateur normal : seulement ses propres paiements
+      baseFilter.user = req.user.id;
+    }
     if (provider) baseFilter.provider = provider;
 
     // Statistiques générales
@@ -590,13 +606,15 @@ const getPaymentStats = async (req, res) => {
       }
     ]);
 
-    // Transactions récentes
-    const recentTransactions = await Payment.find(baseFilter)
+    // Transactions récentes (limitées selon le rôle)
+    const recentTransactionsQuery = Payment.find(baseFilter)
       .populate('user', 'firstName lastName email')
       .populate('donation', 'category amount currency')
       .sort({ createdAt: -1 })
-      .limit(10)
+      .limit(isAdmin ? 10 : 5) // Admins voient plus de transactions
       .select('amount currency status provider createdAt transaction.reference');
+
+    const recentTransactions = await recentTransactionsQuery;
 
     const successRate = generalStats?.totalTransactions > 0 
       ? (generalStats.completedTransactions / generalStats.totalTransactions) * 100 
@@ -611,7 +629,8 @@ const getPaymentStats = async (req, res) => {
           successRate: Math.round(successRate * 100) / 100,
           totalFees: generalStats?.totalFees || 0,
           providerBreakdown: providerStats,
-          recentTransactions
+          recentTransactions,
+          isPersonalStats: !isAdmin // Indiquer si ce sont des stats personnelles
         }
       }
     });

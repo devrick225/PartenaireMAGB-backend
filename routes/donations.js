@@ -89,7 +89,7 @@ router.get('/stats', authenticateToken, getDonationStats);
 router.get('/:id', authenticateToken, getDonation);
 
 // PUT /api/donations/:id - Modifier un don (admin seulement)
-router.put('/:id', authenticateToken, authorizeRoles('admin', 'moderator', 'treasurer'), updateDonation);
+router.put('/:id', authenticateToken, authorizeRoles('admin', 'moderator', 'treasurer', 'support_agent'), updateDonation);
 
 // GET /api/donations/recurring - Liste des dons récurrents
 router.get('/recurring', authenticateToken, getRecurringDonations);

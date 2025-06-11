@@ -58,6 +58,30 @@ const register = async (req, res) => {
       currency: currency || 'XOF'
     });
 
+    // Créer automatiquement un profil par défaut
+    try {
+      const defaultProfile = await Profile.create({
+        user: user._id,
+        address: {
+          country: user.country
+        },
+        communicationPreferences: {
+          language: user.language
+        },
+        donationPreferences: {
+          preferredFrequency: 'monthly'
+        },
+        isComplete: false
+      });
+
+      // Lier le profil à l'utilisateur
+      user.profile = defaultProfile._id;
+      console.log(`✅ Profil par défaut créé pour l'utilisateur ${user.email}`);
+    } catch (profileError) {
+      console.error('❌ Erreur création profil par défaut:', profileError);
+      // Ne pas échouer l'inscription si la création du profil échoue
+    }
+
     // Générer le token de vérification email
     const emailVerificationToken = crypto.randomBytes(32).toString('hex');
     const emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
@@ -102,7 +126,13 @@ const register = async (req, res) => {
           phone: user.phone,
           role: user.role,
           isEmailVerified: user.isEmailVerified,
-          isPhoneVerified: user.isPhoneVerified
+          isPhoneVerified: user.isPhoneVerified,
+          profileComplete: false,
+          profileCompletionPercentage: 0,
+          country: user.country,
+          city: user.city,
+          language: user.language,
+          currency: user.currency
         },
         token,
         refreshToken

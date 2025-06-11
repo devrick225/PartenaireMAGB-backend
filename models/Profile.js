@@ -13,12 +13,12 @@ const profileSchema = new mongoose.Schema({
   // Informations personnelles détaillées
   dateOfBirth: {
     type: Date,
-    required: [true, 'La date de naissance est requise']
+    default: null
   },
   gender: {
     type: String,
     enum: ['male', 'female', 'other'],
-    required: [true, 'Le genre est requis']
+    default: null
   },
   maritalStatus: {
     type: String,
@@ -30,21 +30,21 @@ const profileSchema = new mongoose.Schema({
   address: {
     street: {
       type: String,
-      required: [true, 'L\'adresse est requise']
+      default: ''
     },
     neighborhood: String,
     postalCode: String,
     state: String,
     country: {
       type: String,
-      required: [true, 'Le pays est requis']
+      default: ''
     }
   },
   
   // Informations professionnelles
   occupation: {
     type: String,
-    required: [true, 'La profession est requise']
+    default: ''
   },
   employer: String,
   monthlyIncome: {
@@ -72,20 +72,33 @@ const profileSchema = new mongoose.Schema({
   emergencyContact: {
     name: {
       type: String,
-      required: [true, 'Le nom du contact d\'urgence est requis']
+      default: ''
     },
     relationship: {
       type: String,
-      required: [true, 'La relation avec le contact d\'urgence est requise']
+      default: ''
     },
     phone: {
       type: String,
-      required: [true, 'Le téléphone du contact d\'urgence est requis'],
-      match: [/^\+?[1-9]\d{1,14}$/, 'Numéro de téléphone invalide']
+      default: '',
+      validate: {
+        validator: function(value) {
+          // Valider seulement si le champ n'est pas vide
+          return !value || /^\+?[1-9]\d{1,14}$/.test(value);
+        },
+        message: 'Numéro de téléphone invalide'
+      }
     },
     email: {
       type: String,
-      match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Email invalide']
+      default: '',
+      validate: {
+        validator: function(value) {
+          // Valider seulement si le champ n'est pas vide
+          return !value || /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/.test(value);
+        },
+        message: 'Email invalide'
+      }
     }
   },
   

@@ -112,8 +112,16 @@ const ratingValidation = [
     .withMessage('Le commentaire ne peut pas dépasser 500 caractères')
 ];
 
-// GET /api/tickets/stats - Statistiques des tickets (admin seulement) - doit être avant /:id
-router.get('/stats', authenticateToken, authorizeRoles('admin', 'moderator'), getTicketStats);
+// Validation pour les statistiques de tickets
+const getTicketStatsValidation = [
+  query('period')
+    .optional()
+    .isIn(['week', 'month', 'year'])
+    .withMessage('Période invalide. Valeurs acceptées: week, month, year')
+];
+
+// GET /api/tickets/stats - Obtenir les statistiques des tickets (tous les utilisateurs authentifiés)
+router.get('/stats', authenticateToken, getTicketStatsValidation, getTicketStats);
 
 // GET /api/tickets - Liste des tickets
 router.get('/', authenticateToken, getTicketsValidation, getTickets);
@@ -127,8 +135,8 @@ router.get('/:id', authenticateToken, getTicket);
 // PUT /api/tickets/:id - Modifier un ticket
 router.put('/:id', authenticateToken, updateTicket);
 
-// POST /api/tickets/:id/assign - Assigner un ticket (admin seulement)
-router.post('/:id/assign', authenticateToken, authorizeRoles('admin', 'moderator'), assignTicketValidation, assignTicket);
+// POST /api/tickets/:id/assign - Assigner un ticket
+router.post('/:id/assign', authenticateToken, authorizeRoles('admin', 'moderator', 'support_agent'), assignTicketValidation, assignTicket);
 
 // POST /api/tickets/:id/status - Changer le statut d'un ticket
 router.post('/:id/status', authenticateToken, changeStatusValidation, changeTicketStatus);
@@ -145,8 +153,8 @@ router.post('/:id/close', authenticateToken, [
     .withMessage('La résolution ne peut pas dépasser 1000 caractères')
 ], closeTicket);
 
-// POST /api/tickets/:id/escalate - Escalader un ticket (admin seulement)
-router.post('/:id/escalate', authenticateToken, authorizeRoles('admin', 'moderator'), escalateTicketValidation, escalateTicket);
+// POST /api/tickets/:id/escalate - Escalader un ticket
+router.post('/:id/escalate', authenticateToken, authorizeRoles('admin', 'moderator', 'support_agent'), escalateTicketValidation, escalateTicket);
 
 // POST /api/tickets/:id/rating - Évaluer le support (utilisateur seulement, ticket résolu)
 router.post('/:id/rating', authenticateToken, ratingValidation, addTicketRating);

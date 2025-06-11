@@ -76,7 +76,7 @@ const getUsersValidation = [
     .withMessage('La limite doit être entre 1 et 50'),
   query('role')
     .optional()
-    .isIn(['user', 'admin', 'moderator', 'treasurer'])
+    .isIn(['user', 'support_agent', 'admin', 'moderator', 'treasurer'])
     .withMessage('Rôle invalide'),
   query('isActive')
     .optional()
@@ -92,7 +92,7 @@ const getUsersValidation = [
 // Validation pour modification de rôle
 const updateRoleValidation = [
   body('role')
-    .isIn(['user', 'admin', 'moderator', 'treasurer'])
+    .isIn(['user', 'support_agent', 'admin', 'moderator', 'treasurer'])
     .withMessage('Rôle invalide')
 ];
 
@@ -166,7 +166,7 @@ router.post('/upload-avatar', authenticateToken, uploadAvatar);
 router.delete('/account', authenticateToken, deleteAccountValidation, deleteUserAccount);
 
 // GET /api/users - Liste des utilisateurs (admin seulement)
-router.get('/', authenticateToken, authorizeRoles('admin', 'moderator'), getUsersValidation, getUsers);
+router.get('/', authenticateToken, authorizeRoles('admin', 'moderator', 'support_agent'), getUsersValidation, getUsers);
 
 // GET /api/users/:id - Obtenir un utilisateur par ID (admin ou propriétaire)
 router.get('/:id', authenticateToken, authorizeOwnerOrAdmin, getUser);

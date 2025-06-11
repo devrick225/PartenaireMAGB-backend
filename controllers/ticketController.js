@@ -709,10 +709,21 @@ const addTicketRating = async (req, res) => {
 
 // @desc    Obtenir les statistiques des tickets
 // @route   GET /api/tickets/stats
-// @access  Private (Admin/Moderator)
+// @access  Private (Tous les utilisateurs authentifiés)
 const getTicketStats = async (req, res) => {
   try {
+    // Vérifier les erreurs de validation
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: errors.array()
+      });
+    }
+
     const { period = 'month' } = req.query;
+    const isAdmin = ['admin', 'moderator', 'support_agent'].includes(req.user.role);
 
     // Construire le filtre de date
     let dateFilter = {};
@@ -742,9 +753,16 @@ const getTicketStats = async (req, res) => {
         break;
     }
 
+    // Filtrer selon le rôle de l'utilisateur
+    const baseFilter = { ...dateFilter };
+    if (!isAdmin) {
+      // Utilisateur normal : seulement ses propres tickets
+      baseFilter.user = req.user.id;
+    }
+
     // Statistiques générales
     const [generalStats] = await Ticket.aggregate([
-      { $match: dateFilter },
+      { $match: baseFilter },
       {
         $group: {
           _id: null,
@@ -766,7 +784,7 @@ const getTicketStats = async (req, res) => {
 
     // Répartition par catégorie
     const categoryStats = await Ticket.aggregate([
-      { $match: dateFilter },
+      { $match: baseFilter },
       {
         $group: {
           _id: '$category',
@@ -778,7 +796,7 @@ const getTicketStats = async (req, res) => {
 
     // Répartition par priorité
     const priorityStats = await Ticket.aggregate([
-      { $match: dateFilter },
+      { $match: baseFilter },
       {
         $group: {
           _id: '$priority',
@@ -787,8 +805,17 @@ const getTicketStats = async (req, res) => {
       }
     ]);
 
-    // Tickets en retard
-    const overdueTickets = await Ticket.getOverdueTickets();
+    // Tickets en retard (adaptés selon le rôle)
+    let overdueTickets;
+    if (isAdmin) {
+      overdueTickets = await Ticket.getOverdueTickets();
+    } else {
+      // Pour les utilisateurs normaux, seulement leurs tickets en retard
+      overdueTickets = await Ticket.find({
+        user: req.user.id,
+        status: { $in: ['open', 'in_progress'] }
+      }).where('createdAt').lt(new Date(Date.now() - 24 * 60 * 60 * 1000)); // Plus de 24h
+    }
 
     res.json({
       success: true,
@@ -802,7 +829,8 @@ const getTicketStats = async (req, res) => {
           averageFirstResponseTime: Math.round(generalStats?.averageFirstResponseTime || 0),
           categoryBreakdown: categoryStats,
           priorityBreakdown: priorityStats,
-          overdueTickets: overdueTickets.length
+          overdueTickets: overdueTickets.length,
+          isPersonalStats: !isAdmin // Indiquer si ce sont des stats personnelles
         }
       }
     });

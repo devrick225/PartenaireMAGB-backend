@@ -233,7 +233,7 @@ class WebSocketService {
 
     // Canaux administrateurs
     if (channel.startsWith('admin:')) {
-      return ['admin', 'moderator', 'treasurer'].includes(userRole);
+      return ['admin', 'moderator', 'treasurer', 'support_agent'].includes(userRole);
     }
 
     return false;

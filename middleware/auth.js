@@ -106,7 +106,7 @@ const authorizeOwnerOrAdmin = (req, res, next) => {
 
   const userId = req.params.userId || req.params.id;
   const isOwner = req.user._id.toString() === userId;
-  const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+  const isAdmin = ['admin', 'moderator', 'treasurer', 'support_agent'].includes(req.user.role);
 
   if (!isOwner && !isAdmin) {
     return res.status(403).json({
@@ -159,6 +159,7 @@ const hasPermission = (permission) => {
 
     const userPermissions = {
       user: ['read_own_profile', 'update_own_profile', 'create_donation', 'create_ticket'],
+      support_agent: ['read_users', 'update_tickets', 'read_donations', 'moderate_content'],
       moderator: ['read_users', 'update_tickets', 'read_donations', 'moderate_content'],
       treasurer: ['read_all_donations', 'read_payments', 'generate_reports', 'manage_refunds'],
       admin: ['*'] // Toutes les permissions
