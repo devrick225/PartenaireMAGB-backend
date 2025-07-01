@@ -679,6 +679,9 @@ const getUserStats = async (req, res) => {
           points: user.points,
           badges: user.badges,
           activeRecurringDonations: activeRecurringCount,
+          // Informations du niveau de partenaire
+          partnerLevel: user.partnerLevel,
+          partnerLevelDetails: user.partnerLevelDetails,
           lastDonation: lastDonation ? {
             amount: lastDonation.amount,
             currency: lastDonation.currency,

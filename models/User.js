@@ -187,6 +187,14 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  
+  // Système de niveaux de partenaire
+  partnerLevel: {
+    type: String,
+    enum: ['classique', 'bronze', 'argent', 'or'],
+    default: 'classique'
+  },
+  
   badges: [{
     name: String,
     icon: String,
@@ -216,6 +224,46 @@ userSchema.virtual('fullName').get(function() {
 // Virtual pour vérifier si le compte est verrouillé
 userSchema.virtual('isLocked').get(function() {
   return !!(this.lockUntil && this.lockUntil > Date.now());
+});
+
+// Virtual pour obtenir les détails du niveau de partenaire
+userSchema.virtual('partnerLevelDetails').get(function() {
+  const levels = {
+    'classique': {
+      name: 'Partenaire Classique',
+      range: 'Jusqu\'à 300 000 FCFA',
+      minAmount: 0,
+      maxAmount: 300000,
+      color: '#8B5CF6', // Violet
+      icon: 'star-outline'
+    },
+    'bronze': {
+      name: 'Partenaire Bronze',
+      range: '300 001 - 1M FCFA',
+      minAmount: 300001,
+      maxAmount: 1000000,
+      color: '#CD7F32', // Bronze
+      icon: 'star'
+    },
+    'argent': {
+      name: 'Partenaire Argent',
+      range: '1M - 10M FCFA',
+      minAmount: 1000001,
+      maxAmount: 10000000,
+      color: '#C0C0C0', // Argent
+      icon: 'star'
+    },
+    'or': {
+      name: 'Partenaire Or',
+      range: '10M+ FCFA',
+      minAmount: 10000001,
+      maxAmount: Infinity,
+      color: '#FFD700', // Or
+      icon: 'star'
+    }
+  };
+  
+  return levels[this.partnerLevel] || levels['classique'];
 });
 
 // Middleware pre-save pour hasher le mot de passe
@@ -302,6 +350,9 @@ userSchema.methods.updateDonationStats = function(amount) {
   this.points = isNaN(this.points) ? 0 : Number(this.points);
   this.level = isNaN(this.level) ? 1 : Number(this.level);
 
+  // Stocker l'ancien niveau de partenaire pour détecter les changements
+  const oldPartnerLevel = this.partnerLevel;
+
   // Mettre à jour les statistiques
   this.totalDonations += validAmount;
   this.donationCount += 1;
@@ -316,9 +367,29 @@ userSchema.methods.updateDonationStats = function(amount) {
     this.level = newLevel;
   }
 
-  console.log(`✅ Stats utilisateur mises à jour - Amount: ${validAmount}, Total: ${this.totalDonations}, Count: ${this.donationCount}, Points: ${this.points}`);
+  // Calculer le nouveau niveau de partenaire
+  const newPartnerLevel = this.calculatePartnerLevel();
+
+  console.log(`✅ Stats utilisateur mises à jour - Amount: ${validAmount}, Total: ${this.totalDonations}, Count: ${this.donationCount}, Points: ${this.points}, Partner Level: ${oldPartnerLevel} → ${newPartnerLevel}`);
   
   return this.save();
+};
+
+// Méthode pour calculer le niveau de partenaire basé sur le total des dons
+userSchema.methods.calculatePartnerLevel = function() {
+  const totalDonations = this.totalDonations || 0;
+  
+  if (totalDonations >= 10000001) {
+    this.partnerLevel = 'or';
+  } else if (totalDonations >= 1000001) {
+    this.partnerLevel = 'argent';
+  } else if (totalDonations >= 300001) {
+    this.partnerLevel = 'bronze';
+  } else {
+    this.partnerLevel = 'classique';
+  }
+  
+  return this.partnerLevel;
 };
 
 // Apply pagination plugin
