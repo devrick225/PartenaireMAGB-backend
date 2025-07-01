@@ -136,6 +136,25 @@ const userSchema = new mongoose.Schema({
     type: Date,
     select: false
   },
+  
+  // Codes de vérification (nouveaux)
+  emailVerificationCode: {
+    type: String,
+    select: false
+  },
+  emailVerificationCodeExpires: {
+    type: Date,
+    select: false
+  },
+  phoneVerificationCode: {
+    type: String,
+    select: false
+  },
+  phoneVerificationCodeExpires: {
+    type: Date,
+    select: false
+  },
+  
   passwordResetToken: {
     type: String,
     select: false

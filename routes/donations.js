@@ -8,6 +8,7 @@ const {
   cancelRecurringDonation,
   getDonationStats,
   updateDonation,
+  updateDonationStatus,
   getRecurringDonations
 } = require('../controllers/donationController');
 
@@ -90,6 +91,9 @@ router.get('/:id', authenticateToken, getDonation);
 
 // PUT /api/donations/:id - Modifier un don (admin seulement)
 router.put('/:id', authenticateToken, authorizeRoles('admin', 'moderator', 'treasurer', 'support_agent'), updateDonation);
+
+// PATCH /api/donations/:id/status - Mettre à jour le statut d'une donation
+router.patch('/:id/status', authenticateToken, updateDonationStatus);
 
 // GET /api/donations/recurring - Liste des dons récurrents
 router.get('/recurring', authenticateToken, getRecurringDonations);

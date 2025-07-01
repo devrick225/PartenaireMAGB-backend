@@ -114,20 +114,23 @@ const updateProfile = async (req, res) => {
     const updates = req.body;
     const user = await User.findById(req.user.id).populate('profile');
 
+    // Nettoyer les updates - exclure le champ user pour éviter les erreurs
+    const { user: userField, ...cleanUpdates } = updates;
+
     let profile = user.profile;
     
     // Créer un profil si il n'existe pas
     if (!profile) {
       profile = await Profile.create({
         user: user._id,
-        ...updates
+        ...cleanUpdates
       });
       user.profile = profile._id;
       await user.save({ validateBeforeSave: false });
     } else {
       // Mettre à jour le profil existant avec gestion des champs imbriqués
-      Object.keys(updates).forEach(key => {
-        if (updates[key] !== undefined) {
+      Object.keys(cleanUpdates).forEach(key => {
+        if (cleanUpdates[key] !== undefined) {
           // Gérer les champs imbriqués spéciaux
           if (key.includes('.')) {
             // Utiliser la notation point pour les champs imbriqués
@@ -143,10 +146,10 @@ const updateProfile = async (req, res) => {
             }
             
             // Assigner la valeur
-            current[keys[keys.length - 1]] = updates[key];
+            current[keys[keys.length - 1]] = cleanUpdates[key];
           } else {
             // Champ simple
-            profile[key] = updates[key];
+            profile[key] = cleanUpdates[key];
           }
         }
       });
@@ -168,8 +171,8 @@ const updateProfile = async (req, res) => {
     let userUpdated = false;
     
     userFields.forEach(field => {
-      if (updates[field] && user[field] !== updates[field]) {
-        user[field] = updates[field];
+      if (cleanUpdates[field] && user[field] !== cleanUpdates[field]) {
+        user[field] = cleanUpdates[field];
         userUpdated = true;
       }
     });

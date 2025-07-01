@@ -7,7 +7,9 @@ const {
   verifyPayment,
   refundPayment,
   getPaymentStats,
-  getPayments
+  getPayments,
+  getPaymentByDonationId,
+  getAllPaymentsByDonationId
 } = require('../controllers/paymentController');
 
 const router = express.Router();
@@ -27,7 +29,11 @@ const initializePaymentValidation = [
   body('customerPhone')
     .optional()
     .matches(/^\+?[1-9]\d{1,14}$/)
-    .withMessage('Numéro de téléphone invalide')
+    .withMessage('Numéro de téléphone invalide'),
+  body('existingPaymentId')
+    .optional()
+    .isMongoId()
+    .withMessage('ID de paiement existant invalide')
 ];
 
 // Validation pour le remboursement
@@ -86,6 +92,12 @@ router.get('/', authenticateToken, getPaymentsValidation, getPayments);
 
 // GET /api/payments/:id - Détails d'un paiement
 router.get('/:id', authenticateToken, getPayment);
+
+// GET /api/payments/donation/:donationId - Détails d'un paiement par donationId
+router.get('/donation/:donationId', authenticateToken, getPaymentByDonationId);
+
+// GET /api/payments/donation/:donationId/all - TOUS les paiements d'une donation (anti-doublon)
+router.get('/donation/:donationId/all', authenticateToken, getAllPaymentsByDonationId);
 
 // POST /api/payments/:id/verify - Vérifier un paiement
 router.post('/:id/verify', authenticateToken, verifyPayment);

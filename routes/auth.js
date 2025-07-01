@@ -9,7 +9,11 @@ const {
   resetPassword,
   changePassword,
   getMe,
-  logout
+  logout,
+  sendEmailVerificationCode,
+  verifyEmailCode,
+  sendPhoneVerificationCode,
+  verifyPhoneCode
 } = require('../controllers/authController');
 const { authenticateToken } = require('../middleware/auth');
 
@@ -93,5 +97,22 @@ router.post('/reset-password/:token', resetPasswordValidation, resetPassword);
 router.get('/me', authenticateToken, getMe);
 router.put('/change-password', authenticateToken, changePasswordValidation, changePassword);
 router.post('/logout', authenticateToken, logout);
+
+// Routes de vérification par codes
+router.post('/send-email-verification-code', authenticateToken, sendEmailVerificationCode);
+router.post('/verify-email-code', authenticateToken, [
+  body('code')
+    .isLength({ min: 6, max: 6 })
+    .isNumeric()
+    .withMessage('Code de vérification invalide (6 chiffres requis)')
+], verifyEmailCode);
+
+router.post('/send-phone-verification-code', authenticateToken, sendPhoneVerificationCode);
+router.post('/verify-phone-code', authenticateToken, [
+  body('code')
+    .isLength({ min: 6, max: 6 })
+    .isNumeric()
+    .withMessage('Code de vérification invalide (6 chiffres requis)')
+], verifyPhoneCode);
 
 module.exports = router; 

@@ -233,6 +233,11 @@ const login = async (req, res) => {
           email: user.email,
           phone: user.phone,
           role: user.role,
+          country: user.country,
+          city: user.city,
+          language: user.language,
+          currency: user.currency,
+          avatar: user.avatar,
           isEmailVerified: user.isEmailVerified,
           isPhoneVerified: user.isPhoneVerified,
           profileComplete: profile?.isComplete || false,
@@ -537,6 +542,246 @@ const logout = async (req, res) => {
   }
 };
 
+// @desc    Envoyer code de vérification email
+// @route   POST /api/auth/send-email-verification-code
+// @access  Private
+const sendEmailVerificationCode = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email déjà vérifié'
+      });
+    }
+
+    // Générer un code à 6 chiffres
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    user.emailVerificationCode = verificationCode;
+    user.emailVerificationCodeExpires = codeExpires;
+    await user.save({ validateBeforeSave: false });
+
+    console.log('Debug envoi code:', {
+      userId: user._id,
+      email: user.email,
+      code: verificationCode,
+      expiresAt: codeExpires
+    });
+
+    // Envoyer l'email avec le code
+    try {
+      await emailService.sendEmailVerificationCode(
+        user.email,
+        user.firstName,
+        verificationCode
+      );
+      console.log(`Code de vérification email envoyé à ${user.email}`);
+    } catch (emailError) {
+      console.error('Erreur envoi code email:', emailError);
+      return res.status(500).json({
+        success: false,
+        error: 'Erreur lors de l\'envoi du code de vérification'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Code de vérification envoyé par email'
+    });
+  } catch (error) {
+    console.error('Erreur sendEmailVerificationCode:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de l\'envoi du code de vérification'
+    });
+  }
+};
+
+// @desc    Vérifier code email
+// @route   POST /api/auth/verify-email-code
+// @access  Private
+const verifyEmailCode = async (req, res) => {
+  try {
+    const { code } = req.body;
+    const user = await User.findById(req.user.id).select('+emailVerificationCode +emailVerificationCodeExpires');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email déjà vérifié'
+      });
+    }
+
+    console.log('Debug verification:', {
+      receivedCode: code,
+      storedCode: user.emailVerificationCode,
+      expiresAt: user.emailVerificationCodeExpires,
+      now: new Date(),
+      isExpired: user.emailVerificationCodeExpires < new Date()
+    });
+
+    // Vérifier le code et l'expiration
+    if (!user.emailVerificationCode || 
+        user.emailVerificationCode !== code ||
+        user.emailVerificationCodeExpires < new Date()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Code de vérification invalide ou expiré'
+      });
+    }
+
+    // Marquer l'email comme vérifié
+    user.isEmailVerified = true;
+    user.emailVerificationCode = undefined;
+    user.emailVerificationCodeExpires = undefined;
+    await user.save({ validateBeforeSave: false });
+
+    res.json({
+      success: true,
+      message: 'Email vérifié avec succès'
+    });
+  } catch (error) {
+    console.error('Erreur verifyEmailCode:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la vérification du code'
+    });
+  }
+};
+
+// @desc    Envoyer code de vérification SMS
+// @route   POST /api/auth/send-phone-verification-code
+// @access  Private
+const sendPhoneVerificationCode = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    if (user.isPhoneVerified) {
+      return res.status(400).json({
+        success: false,
+        error: 'Numéro de téléphone déjà vérifié'
+      });
+    }
+
+    if (!user.phone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun numéro de téléphone enregistré'
+      });
+    }
+
+    // Générer un code à 6 chiffres
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    user.phoneVerificationCode = verificationCode;
+    user.phoneVerificationCodeExpires = codeExpires;
+    await user.save({ validateBeforeSave: false });
+
+    // Pour le moment, on log le code (en production, utiliser un service SMS)
+    console.log(`Code SMS pour ${user.phone}: ${verificationCode}`);
+
+    // TODO: Intégrer un service SMS réel (Twilio, etc.)
+    // await smsService.sendVerificationCode(user.phone, verificationCode);
+
+    res.json({
+      success: true,
+      message: 'Code de vérification envoyé par SMS',
+      // En mode développement, retourner le code pour les tests
+      ...(process.env.NODE_ENV === 'development' && { code: verificationCode })
+    });
+  } catch (error) {
+    console.error('Erreur sendPhoneVerificationCode:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de l\'envoi du code de vérification'
+    });
+  }
+};
+
+// @desc    Vérifier code SMS
+// @route   POST /api/auth/verify-phone-code
+// @access  Private
+const verifyPhoneCode = async (req, res) => {
+  try {
+    const { code } = req.body;
+    const user = await User.findById(req.user.id).select('+phoneVerificationCode +phoneVerificationCodeExpires');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    if (user.isPhoneVerified) {
+      return res.status(400).json({
+        success: false,
+        error: 'Numéro de téléphone déjà vérifié'
+      });
+    }
+
+    console.log('Debug verification SMS:', {
+      receivedCode: code,
+      storedCode: user.phoneVerificationCode,
+      expiresAt: user.phoneVerificationCodeExpires,
+      now: new Date(),
+      isExpired: user.phoneVerificationCodeExpires < new Date()
+    });
+
+    // Vérifier le code et l'expiration
+    if (!user.phoneVerificationCode || 
+        user.phoneVerificationCode !== code ||
+        user.phoneVerificationCodeExpires < new Date()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Code de vérification invalide ou expiré'
+      });
+    }
+
+    // Marquer le téléphone comme vérifié
+    user.isPhoneVerified = true;
+    user.phoneVerificationCode = undefined;
+    user.phoneVerificationCodeExpires = undefined;
+    await user.save({ validateBeforeSave: false });
+
+    res.json({
+      success: true,
+      message: 'Numéro de téléphone vérifié avec succès'
+    });
+  } catch (error) {
+    console.error('Erreur verifyPhoneCode:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la vérification du code'
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
@@ -546,5 +791,9 @@ module.exports = {
   resetPassword,
   changePassword,
   getMe,
-  logout
+  logout,
+  sendEmailVerificationCode,
+  verifyEmailCode,
+  sendPhoneVerificationCode,
+  verifyPhoneCode
 }; 

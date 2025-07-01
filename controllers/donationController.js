@@ -555,6 +555,100 @@ const getRecurringDonations = async (req, res) => {
     }
   };
 
+// @desc    Mettre à jour le statut d'une donation basé sur le statut du paiement
+// @route   PATCH /api/donations/:id/status
+// @access  Private
+const updateDonationStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, updatedFrom, paymentStatus } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de donation invalide'
+      });
+    }
+
+    // Validation du statut
+    const validStatuses = ['pending', 'processing', 'completed', 'failed', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Statut de donation invalide'
+      });
+    }
+
+    const donation = await Donation.findById(id).populate('user');
+
+    if (!donation) {
+      return res.status(404).json({
+        success: false,
+        error: 'Donation non trouvée'
+      });
+    }
+
+    // Vérifier les permissions - utilisateur propriétaire ou admin
+    if (donation.user._id.toString() !== req.user.id && !['admin', 'moderator', 'treasurer'].includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Accès non autorisé à cette donation'
+      });
+    }
+
+    const oldStatus = donation.status;
+    
+    // Mettre à jour le statut
+    donation.status = status;
+    
+    // Ajouter à l'historique
+    const historyDescription = updatedFrom === 'payment_verification' 
+      ? `Statut mis à jour via vérification de paiement (${paymentStatus} -> ${status})`
+      : `Statut mis à jour: ${oldStatus} -> ${status}`;
+      
+    donation.addToHistory('updated', historyDescription, req.user.id, {
+      oldStatus,
+      newStatus: status,
+      updatedFrom: updatedFrom || 'manual',
+      paymentStatus
+    });
+
+    await donation.save();
+
+    // Mettre à jour les statistiques utilisateur si nécessaire
+    if (status === 'completed' && oldStatus !== 'completed') {
+      await donation.user.updateDonationStats(donation.amount);
+    }
+
+    res.json({
+      success: true,
+      message: `Statut de la donation mis à jour: ${oldStatus} -> ${status}`,
+      data: {
+        donation: {
+          _id: donation._id,
+          status: donation.status,
+          amount: donation.amount,
+          currency: donation.currency,
+          category: donation.category,
+          updatedAt: donation.updatedAt
+        },
+        statusChange: {
+          from: oldStatus,
+          to: status,
+          updatedFrom: updatedFrom || 'manual',
+          updatedAt: new Date()
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Erreur updateDonationStatus:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la mise à jour du statut de la donation'
+    });
+  }
+};
+
 module.exports = {
   getDonations,
   createDonation,
@@ -562,6 +656,7 @@ module.exports = {
   cancelRecurringDonation,
   getDonationStats,
   updateDonation,
+  updateDonationStatus,
   processRecurringDonations,
   getRecurringDonations
 }; 

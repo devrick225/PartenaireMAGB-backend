@@ -6,14 +6,15 @@ class EmailService {
     this.transporter = this.createTransporter();
   }
 
+
   createTransporter() {
     return nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
       port: parseInt(process.env.EMAIL_PORT),
       secure: false, // true for 465, false for other ports
       auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
+        user: process.env.EMAIL_USER || 'ivoprestalertes@gmail.com',
+        pass: process.env.EMAIL_PASS || 'xdqi oekr ohqn rlum'
       },
       tls: {
         rejectUnauthorized: false
@@ -46,6 +47,14 @@ class EmailService {
     
     const subject = 'Vérifiez votre adresse email - PARTENAIRE MAGB';
     const htmlContent = this.getVerificationEmailTemplate(firstName, verificationUrl);
+    
+    return await this.sendEmail(email, subject, htmlContent);
+  }
+
+  // Email de vérification par code (pour mobile)
+  async sendEmailVerificationCode(email, firstName, verificationCode) {
+    const subject = 'Code de vérification - PARTENAIRE MAGB';
+    const htmlContent = this.getEmailVerificationCodeTemplate(firstName, verificationCode);
     
     return await this.sendEmail(email, subject, htmlContent);
   }
@@ -153,6 +162,58 @@ class EmailService {
             <hr style="margin: 30px 0;">
             <p><small>Si le bouton ne fonctionne pas, copiez et collez ce lien dans votre navigateur :<br>
             <a href="${verificationUrl}">${verificationUrl}</a></small></p>
+          </div>
+          <div class="footer">
+            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+  }
+
+  getEmailVerificationCodeTemplate(firstName, verificationCode) {
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Code de vérification</title>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #fff; padding: 30px; border: 1px solid #ddd; }
+          .code-box { background: #f8f9fa; border: 3px solid #667eea; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0; }
+          .code { font-size: 32px; font-weight: bold; color: #667eea; letter-spacing: 8px; font-family: 'Courier New', monospace; }
+          .footer { background: #f8f9fa; padding: 20px; text-align: center; color: #666; border-radius: 0 0 8px 8px; }
+          .warning { background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 5px; margin: 20px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>📧 PARTENAIRE MAGB</h1>
+            <p>Code de vérification email</p>
+          </div>
+          <div class="content">
+            <h2>Bonjour ${firstName},</h2>
+            <p>Voici votre code de vérification pour confirmer votre adresse email :</p>
+            
+            <div class="code-box">
+              <div class="code">${verificationCode}</div>
+            </div>
+            
+            <div class="warning">
+              <strong>⏰ Important :</strong>
+              <ul>
+                <li>Ce code expire dans <strong>10 minutes</strong></li>
+                <li>Utilisez ce code dans l'application mobile</li>
+                <li>Ne partagez jamais ce code avec quelqu'un d'autre</li>
+              </ul>
+            </div>
+            
+            <p>Si vous n'avez pas demandé cette vérification, vous pouvez ignorer cet email.</p>
           </div>
           <div class="footer">
             <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>

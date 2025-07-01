@@ -268,7 +268,7 @@ const paymentSchema = new mongoose.Schema({
       type: String,
       enum: [
         'created', 'initiated', 'processing', 'completed', 
-        'failed', 'cancelled', 'refunded', 'webhook_received'
+        'failed', 'cancelled', 'refunded', 'webhook_received', 'updated'
       ]
     },
     description: String,

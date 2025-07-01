@@ -22,7 +22,7 @@ const initializePayment = async (req, res) => {
       });
     }
 
-    const { donationId, provider, paymentMethod, customerPhone } = req.body;
+    const { donationId, provider, paymentMethod, customerPhone, existingPaymentId } = req.body;
 
     // Vérifier que la donation existe et appartient à l'utilisateur
     const donation = await Donation.findById(donationId);
@@ -40,16 +40,48 @@ const initializePayment = async (req, res) => {
       });
     }
 
-    // Créer l'entrée de paiement
-    const payment = await Payment.create({
-      user: req.user.id,
-      donation: donationId,
-      amount: donation.amount,
-      currency: donation.currency,
-      paymentMethod,
-      provider,
-      status: 'pending'
-    });
+    let payment;
+
+    // Vérifier si on doit mettre à jour un paiement existant ou en créer un nouveau
+    if (existingPaymentId) {
+      // Mode mise à jour : utiliser le paiement existant
+      console.log(`💡 Backend: Mode mise à jour, paiement existant: ${existingPaymentId}`);
+      
+      payment = await Payment.findById(existingPaymentId);
+      if (!payment) {
+        return res.status(404).json({
+          success: false,
+          error: 'Paiement existant non trouvé'
+        });
+      }
+
+      if (payment.user.toString() !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          error: 'Accès non autorisé à ce paiement'
+        });
+      }
+
+      // Mettre à jour les champs nécessaires
+      payment.paymentMethod = paymentMethod;
+      payment.provider = provider;
+      payment.status = 'pending'; // Réinitialiser le statut
+      
+      console.log(`🔄 Backend: Mise à jour paiement ${existingPaymentId} avec ${provider}`);
+    } else {
+      // Mode création : créer un nouveau paiement
+      console.log(`✨ Backend: Création nouveau paiement pour donation ${donationId}`);
+      
+      payment = await Payment.create({
+        user: req.user.id,
+        donation: donationId,
+        amount: donation.amount,
+        currency: donation.currency,
+        paymentMethod,
+        provider,
+        status: 'pending'
+      });
+    }
 
     // Calculer les frais
     const fees = paymentService.calculateFees(donation.amount, provider, donation.currency);
@@ -355,7 +387,8 @@ const verifyPayment = async (req, res) => {
 
         case 'moneyfusion':
           verificationResult = await moneyFusionService.verifyPayment(
-            payment.moneyfusion.token
+            payment.moneyfusion.token,
+            payment
           );
           break;
 
@@ -364,56 +397,79 @@ const verifyPayment = async (req, res) => {
             success: false,
             error: 'Vérification non supportée pour ce fournisseur'
           });
-      }
+              }
 
-      if (verificationResult.success) {
-        // Marquer le paiement comme complété
-        await payment.markCompleted({
-          [payment.provider]: verificationResult.data
-        });
+        // Traitement spécial pour MoneyFusion avec la structure de réponse demandée
+      if (payment.provider === 'moneyfusion') {
+        // MoneyFusion retourne la structure complète avec originalResponse
+        const originalResponse = verificationResult.metadata?.originalResponse;
+        
+        if (originalResponse && originalResponse.statut && originalResponse.data) {
+          const moneyFusionData = originalResponse.data;
+          
+          // Note: La mise à jour des statuts de paiement et donation est déjà gérée 
+          // automatiquement dans moneyFusionService.verifyPayment()
 
-        // Mettre à jour la donation
-        payment.donation.status = 'completed';
-        await payment.donation.save();
-
-        // Mettre à jour les statistiques utilisateur
-        await payment.user.updateDonationStats(payment.amount);
-
-        // Envoyer le reçu par email
-        try {
-          await emailService.sendDonationReceiptEmail(
-            payment.user.email,
-            payment.user.firstName,
-            {
-              receiptNumber: payment.donation.receipt.number,
-              donorName: `${payment.user.firstName} ${payment.user.lastName}`,
-              formattedAmount: payment.formattedAmount,
-              donationDate: payment.donation.createdAt,
-              paymentMethod: payment.paymentMethod,
-              category: payment.donation.category
+          // Retourner la structure exacte demandée par l'utilisateur
+          return res.json({
+            statut: originalResponse.statut,
+            message: originalResponse.message || 'Vérification effectuée',
+            data: {
+              _id: moneyFusionData._id || payment._id,
+              tokenPay: moneyFusionData.tokenPay,
+              numeroSend: moneyFusionData.numeroSend,
+              nomclient: moneyFusionData.nomclient,
+              personal_Info: moneyFusionData.personal_Info || [],
+              numeroTransaction: moneyFusionData.numeroTransaction,
+              Montant: moneyFusionData.Montant,
+              frais: moneyFusionData.frais,
+              statut: moneyFusionData.statut,
+              moyen: moneyFusionData.moyen,
+              return_url: moneyFusionData.return_url || '',
+              createdAt: moneyFusionData.createdAt
             }
-          );
-        } catch (emailError) {
-          console.error('Erreur envoi reçu par email:', emailError);
+          });
+        } else {
+          // Pas de réponse valide de MoneyFusion
+          return res.status(400).json({
+            statut: false,
+            message: verificationResult.message || 'Impossible de vérifier le paiement',
+            data: null
+          });
         }
-
-        res.json({
-          success: true,
-          message: 'Paiement vérifié et complété avec succès',
-          data: {
-            status: payment.status,
-            verifiedAt: payment.transaction.completedAt
-          }
-        });
       } else {
-        // Marquer comme échoué
-        await payment.markFailed(verificationResult.message || 'Vérification échouée');
+        // Logique pour autres fournisseurs (CinetPay, Stripe, etc.)
+        if (verificationResult.success) {
+          // Marquer le paiement comme complété
+          await payment.markCompleted({
+            [payment.provider]: verificationResult.data
+          });
 
-        res.status(400).json({
-          success: false,
-          error: 'Paiement non confirmé',
-          details: verificationResult.message
-        });
+          // Mettre à jour la donation
+          payment.donation.status = 'completed';
+          await payment.donation.save();
+
+          // Mettre à jour les statistiques utilisateur
+          await payment.user.updateDonationStats(payment.amount);
+
+          res.json({
+            success: true,
+            message: 'Paiement vérifié et complété avec succès',
+            data: {
+              status: payment.status,
+              verifiedAt: payment.transaction.completedAt
+            }
+          });
+        } else {
+          // Marquer comme échoué
+          await payment.markFailed(verificationResult.message || 'Vérification échouée');
+
+          res.status(400).json({
+            success: false,
+            error: 'Paiement non confirmé',
+            details: verificationResult.message
+          });
+        }
       }
 
     } catch (verificationError) {
@@ -691,11 +747,97 @@ const getPayments = async (req, res) => {
   }
 };
 
+// @desc    Obtenir les détails d'un paiement par donationId
+// @route   GET /api/payments/donation/:donationId
+// @access  Private
+const getPaymentByDonationId = async (req, res) => {
+  try {
+    const payment = await Payment.findOne({ 
+      donation: req.params.donationId 
+    }).populate('donation user');
+    
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        error: 'Payment not found for this donation'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: { payment }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// @desc    Obtenir TOUS les paiements d'une donation (pour gestion des doublons)
+// @route   GET /api/payments/donation/:donationId/all
+// @access  Private
+const getAllPaymentsByDonationId = async (req, res) => {
+  try {
+    const { donationId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(donationId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de donation invalide'
+      });
+    }
+
+    // Récupérer TOUS les paiements pour cette donation
+    const payments = await Payment.find({ 
+      donation: donationId 
+    })
+      .populate('donation', 'amount currency category type')
+      .populate('user', 'firstName lastName email')
+      .sort({ createdAt: -1 }); // Plus récent en premier
+
+    // Vérifier que l'utilisateur a accès à ces paiements
+    if (payments.length > 0) {
+      const firstPayment = payments[0];
+      if (firstPayment.user._id.toString() !== req.user.id && !['admin', 'moderator', 'treasurer'].includes(req.user.role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Accès non autorisé à ces paiements'
+        });
+      }
+    }
+
+    console.log(`🔍 getAllPaymentsByDonationId - Donation: ${donationId}, Paiements trouvés: ${payments.length}`);
+    
+    if (payments.length > 1) {
+      console.warn(`⚠️ Backend: ${payments.length} paiements trouvés pour la donation ${donationId}`);
+    }
+
+    res.json({
+      success: true,
+      data: { 
+        payments,
+        count: payments.length,
+        donationId 
+      }
+    });
+  } catch (error) {
+    console.error('Erreur getAllPaymentsByDonationId:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des paiements'
+    });
+  }
+};
+
 module.exports = {
   initializePayment,
   getPayment,
   verifyPayment,
   refundPayment,
   getPaymentStats,
-  getPayments
+  getPayments,
+  getPaymentByDonationId,
+  getAllPaymentsByDonationId
 }; 

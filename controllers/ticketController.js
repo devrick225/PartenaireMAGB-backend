@@ -816,7 +816,7 @@ const getTicketStats = async (req, res) => {
         status: { $in: ['open', 'in_progress'] }
       }).where('createdAt').lt(new Date(Date.now() - 24 * 60 * 60 * 1000)); // Plus de 24h
     }
-
+    
     res.json({
       success: true,
       data: {
@@ -834,6 +834,7 @@ const getTicketStats = async (req, res) => {
         }
       }
     });
+
   } catch (error) {
     console.error('Erreur getTicketStats:', error);
     res.status(500).json({
