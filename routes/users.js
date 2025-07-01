@@ -189,7 +189,7 @@ router.get('/:id/donations', authenticateToken, authorizeOwnerOrAdmin, [
     .withMessage('La limite doit être entre 1 et 50'),
   query('category')
     .optional()
-    .isIn(['tithe', 'offering', 'building', 'missions', 'charity', 'education', 'youth', 'women', 'men', 'special', 'emergency'])
+    .isIn(['soutien', 'tithe', 'offering', 'building', 'missions', 'charity', 'education', 'youth', 'women', 'men', 'special', 'emergency'])
     .withMessage('Catégorie invalide'),
   query('status')
     .optional()

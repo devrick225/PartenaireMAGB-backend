@@ -27,6 +27,7 @@ const donationSchema = new mongoose.Schema({
   category: {
     type: String,
     enum: [
+      'soutien',      // Soutien
       'tithe',        // Dîme
       'offering',     // Offrande
       'building',     // Construction

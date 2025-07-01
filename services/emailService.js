@@ -525,6 +525,7 @@ class EmailService {
 
   getCategoryLabel(category) {
     const labels = {
+      'soutien': 'Soutien',
       'tithe': 'Dîme',
       'offering': 'Offrande',
       'building': 'Construction',

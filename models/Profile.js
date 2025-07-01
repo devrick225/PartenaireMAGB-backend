@@ -124,7 +124,7 @@ const profileSchema = new mongoose.Schema({
     },
     donationCategories: [{
       type: String,
-      enum: ['tithe', 'offering', 'building', 'missions', 'charity', 'education', 'youth', 'women', 'men']
+      enum: ['soutien', 'tithe', 'offering', 'building', 'missions', 'charity', 'education', 'youth', 'women', 'men']
     }]
   },
   
