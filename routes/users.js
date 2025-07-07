@@ -11,13 +11,18 @@ const {
   getUserDonations,
   getUserStats,
   uploadAvatar,
+  uploadAvatarBase64,
   updateUserPreferences,
   deleteUserAccount,
   getLeaderboard,
   downloadPersonalData
 } = require('../controllers/userController');
+const cloudinaryService = require('../services/cloudinaryService');
 
 const router = express.Router();
+
+// Configuration de l'uploader d'avatar
+const avatarUpload = cloudinaryService.getAvatarUploader();
 
 // Validation pour la mise à jour du profil
 const updateProfileValidation = [
@@ -159,8 +164,18 @@ router.put('/profile', authenticateToken, updateProfileValidation, updateProfile
 // PUT /api/users/preferences - Mettre à jour les préférences utilisateur
 router.put('/preferences', authenticateToken, preferencesValidation, updateUserPreferences);
 
-// POST /api/users/upload-avatar - Upload d'avatar
-router.post('/upload-avatar', authenticateToken, uploadAvatar);
+// POST /api/users/upload-avatar - Upload d'avatar avec fichier
+router.post('/upload-avatar', authenticateToken, avatarUpload.single('avatar'), uploadAvatar);
+
+// POST /api/users/upload-avatar-base64 - Upload d'avatar en base64 (pour mobile)
+router.post('/upload-avatar-base64', authenticateToken, [
+  body('imageData')
+    .notEmpty()
+    .withMessage('Données d\'image requises'),
+  body('imageData')
+    .matches(/^data:image\/(jpeg|jpg|png|webp);base64,/)
+    .withMessage('Format d\'image invalide. Utilisez JPEG, PNG ou WebP en base64.')
+], uploadAvatarBase64);
 
 // DELETE /api/users/account - Supprimer son compte (avec confirmation)
 router.delete('/account', authenticateToken, deleteAccountValidation, deleteUserAccount);

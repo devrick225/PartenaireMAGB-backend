@@ -95,8 +95,7 @@ app.use(errorHandler);
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
+      // Options supprimées car dépréciées dans les versions récentes du driver MongoDB
     });
     console.log(`MongoDB connecté: ${conn.connection.host}`);
   } catch (error) {

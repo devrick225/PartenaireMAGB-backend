@@ -77,6 +77,11 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  avatarPublicId: {
+    type: String,
+    default: null,
+    select: false
+  },
   
   // Préférences utilisateur
   language: {
@@ -155,6 +160,16 @@ const userSchema = new mongoose.Schema({
     select: false
   },
   
+  // Codes de réinitialisation de mot de passe
+  passwordResetCode: {
+    type: String,
+    select: false
+  },
+  passwordResetCodeExpires: {
+    type: Date,
+    select: false
+  },
+  
   passwordResetToken: {
     type: String,
     select: false
@@ -210,7 +225,7 @@ const userSchema = new mongoose.Schema({
 });
 
 // Indexes pour les performances
-userSchema.index({ email: 1 });
+// userSchema.index({ email: 1 }); // Supprimé car unique: true crée déjà l'index
 userSchema.index({ phone: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ isActive: 1 });

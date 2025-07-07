@@ -277,7 +277,7 @@ const ticketSchema = new mongoose.Schema({
 
 // Indexes pour les performances
 ticketSchema.index({ user: 1 });
-ticketSchema.index({ ticketNumber: 1 });
+// ticketSchema.index({ ticketNumber: 1 }); // Supprimé car unique: true crée déjà l'index
 ticketSchema.index({ status: 1 });
 ticketSchema.index({ category: 1 });
 ticketSchema.index({ priority: 1 });

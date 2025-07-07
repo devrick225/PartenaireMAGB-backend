@@ -14,7 +14,7 @@ const donationSchema = new mongoose.Schema({
   amount: {
     type: Number,
     required: [true, 'Le montant est requis'],
-    min: [100, 'Le montant minimum est de 100 XOF']
+    min: [200, 'Le montant minimum est de 200 XOF']
   },
   currency: {
     type: String,
@@ -246,7 +246,6 @@ donationSchema.index({ category: 1 });
 donationSchema.index({ createdAt: -1 });
 donationSchema.index({ 'recurring.isActive': 1 });
 donationSchema.index({ 'recurring.nextPaymentDate': 1 });
-donationSchema.index({ 'receipt.number': 1 });
 
 // Index composé pour les dons récurrents actifs
 donationSchema.index({ 

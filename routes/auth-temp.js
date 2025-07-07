@@ -15,9 +15,7 @@ const {
   sendPhoneVerificationCode,
   verifyPhoneCode,
   requestPasswordResetCode,
-  resetPasswordWithCode,
-  requestPasswordResetSmsCode,
-  resetPasswordWithSmsCode
+  resetPasswordWithCode
 } = require('../controllers/authController');
 const { authenticateToken } = require('../middleware/auth');
 
@@ -112,27 +110,6 @@ const resetPasswordWithCodeValidation = [
     .withMessage('Le nouveau mot de passe doit contenir au moins une minuscule, une majuscule et un chiffre')
 ];
 
-const requestPasswordResetSmsCodeValidation = [
-  body('phone')
-    .matches(/^\+?[1-9]\d{1,14}$/)
-    .withMessage('Numéro de téléphone invalide')
-];
-
-const resetPasswordWithSmsCodeValidation = [
-  body('phone')
-    .matches(/^\+?[1-9]\d{1,14}$/)
-    .withMessage('Numéro de téléphone invalide'),
-  body('code')
-    .isLength({ min: 6, max: 6 })
-    .isNumeric()
-    .withMessage('Code de réinitialisation invalide (6 chiffres requis)'),
-  body('newPassword')
-    .isLength({ min: 8 })
-    .withMessage('Le nouveau mot de passe doit contenir au moins 8 caractères')
-    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
-    .withMessage('Le nouveau mot de passe doit contenir au moins une minuscule, une majuscule et un chiffre')
-];
-
 // Routes publiques
 router.post('/register', registerValidation, register);
 router.post('/login', loginValidation, login);
@@ -144,10 +121,6 @@ router.post('/reset-password/:token', resetPasswordValidation, resetPassword);
 // Nouvelles routes pour réinitialisation avec codes (pour mobile)
 router.post('/request-password-reset-code', requestPasswordResetCodeValidation, requestPasswordResetCode);
 router.post('/reset-password-with-code', resetPasswordWithCodeValidation, resetPasswordWithCode);
-
-// Nouvelles routes pour réinitialisation par SMS
-router.post('/request-password-reset-sms-code', requestPasswordResetSmsCodeValidation, requestPasswordResetSmsCode);
-router.post('/reset-password-with-sms-code', resetPasswordWithSmsCodeValidation, resetPasswordWithSmsCode);
 
 // Routes protégées
 router.get('/me', authenticateToken, getMe);
@@ -171,4 +144,4 @@ router.post('/verify-phone-code', authenticateToken, [
     .withMessage('Code de vérification invalide (6 chiffres requis)')
 ], verifyPhoneCode);
 
-module.exports = router;
+module.exports = router; 

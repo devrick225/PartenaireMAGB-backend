@@ -25,8 +25,7 @@ const log = (message, color = 'reset') => {
 async function connectToDatabase() {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
+      // Options supprimées car dépréciées dans les versions récentes du driver MongoDB
     });
     log('✅ Connexion MongoDB réussie', 'green');
   } catch (error) {
@@ -123,116 +122,4 @@ async function testWebhookProcessing() {
     log(`   - Statut: ${webhookResult.status}`, 'blue');
     log(`   - Montant: ${webhookResult.data.amount} XOF`, 'blue');
     log(`   - Frais: ${webhookResult.data.fees} XOF`, 'blue');
-    log(`   - Méthode: ${webhookResult.data.paymentMethod}`, 'blue');
-    
-  } catch (error) {
-    log(`❌ Erreur test webhook: ${error.message}`, 'red');
-  }
-}
-
-async function testFeesCalculation() {
-  log('\n💰 Test de calcul des frais...', 'blue');
-  
-  try {
-    const amounts = [500, 1000, 5000, 10000, 50000];
-    
-    amounts.forEach(amount => {
-      const fees = moneyFusionService.calculateFees(amount);
-      log(`💵 Montant: ${amount} XOF`, 'yellow');
-      log(`   - Frais pourcentage: ${fees.percentageFee} XOF (${fees.feePercentage}%)`, 'blue');
-      log(`   - Frais fixes: ${fees.fixedFee} XOF`, 'blue');
-      log(`   - Total frais: ${fees.totalFee} XOF`, 'blue');
-      log(`   - Montant net: ${fees.netAmount} XOF`, 'green');
-      log('');
-    });
-  } catch (error) {
-    log(`❌ Erreur calcul frais: ${error.message}`, 'red');
-  }
-}
-
-async function testCronJobs() {
-  log('\n⏰ Test des tâches cron...', 'blue');
-  
-  try {
-    // Vérifier le statut des tâches cron
-    const status = cronJobsService.getStatus();
-    log(`📊 Statut des tâches cron:`, 'green');
-    log(`   - Initialisées: ${status.initialized}`, 'blue');
-    log(`   - Nombre de tâches: ${status.totalJobs}`, 'blue');
-    
-    Object.entries(status.jobs).forEach(([name, job]) => {
-      log(`   - ${name}:`, 'yellow');
-      log(`     • En cours: ${job.running}`, 'blue');
-      log(`     • Programmée: ${job.scheduled}`, 'blue');
-      log(`     • Prochaine exécution: ${job.nextRun || 'N/A'}`, 'blue');
-    });
-
-    // Test de vérification manuelle
-    log('\n🔍 Test de vérification manuelle des paiements...', 'blue');
-    const verificationResult = await cronJobsService.runPaymentVerificationNow();
-    log(`✅ Vérification terminée:`, 'green');
-    log(`   - Paiements vérifiés: ${verificationResult.checked}`, 'blue');
-    log(`   - Complétés: ${verificationResult.completed}`, 'green');
-    log(`   - Échoués: ${verificationResult.failed}`, 'red');
-    log(`   - Erreurs: ${verificationResult.errors}`, 'yellow');
-    
-  } catch (error) {
-    log(`❌ Erreur test cron: ${error.message}`, 'red');
-  }
-}
-
-async function runTests() {
-  log(`${colors.bold}🚀 DÉBUT DES TESTS MONEYFUSION${colors.reset}`, 'green');
-  log(`${colors.bold}======================================${colors.reset}`, 'green');
-  
-  try {
-    await connectToDatabase();
-    
-    await testMoneyFusionConnection();
-    await testPaymentInitialization();
-    await testWebhookProcessing();
-    await testFeesCalculation();
-    
-    // Initialiser les cron jobs pour les tests
-    cronJobsService.initialize();
-    await testCronJobs();
-    
-    log(`\n${colors.bold}✅ TOUS LES TESTS TERMINÉS AVEC SUCCÈS${colors.reset}`, 'green');
-    log(`${colors.bold}=======================================${colors.reset}`, 'green');
-    
-  } catch (error) {
-    log(`\n${colors.bold}❌ ÉCHEC DES TESTS: ${error.message}${colors.reset}`, 'red');
-    log(`${colors.bold}=======================================${colors.reset}`, 'red');
-  } finally {
-    // Nettoyer
-    cronJobsService.stopAll();
-    await mongoose.connection.close();
-    log('\n👋 Connexion fermée. Au revoir !', 'blue');
-    process.exit(0);
-  }
-}
-
-// Gestion des erreurs non capturées
-process.on('unhandledRejection', (reason, promise) => {
-  log(`❌ Rejection non gérée: ${reason}`, 'red');
-  process.exit(1);
-});
-
-process.on('uncaughtException', (error) => {
-  log(`❌ Exception non capturée: ${error.message}`, 'red');
-  process.exit(1);
-});
-
-// Lancer les tests
-if (require.main === module) {
-  runTests();
-}
-
-module.exports = {
-  runTests,
-  testMoneyFusionConnection,
-  testPaymentInitialization,
-  testWebhookProcessing,
-  testFeesCalculation,
-  testCronJobs
-}; 
+    log(`

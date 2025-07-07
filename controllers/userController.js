@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Profile = require('../models/Profile');
 const Donation = require('../models/Donation');
 const emailService = require('../services/emailService');
+const cloudinaryService = require('../services/cloudinaryService');
 
 // @desc    Obtenir le profil de l'utilisateur connecté
 // @route   GET /api/users/profile
@@ -707,21 +708,184 @@ const getUserStats = async (req, res) => {
 // @access  Private
 const uploadAvatar = async (req, res) => {
   try {
-    // TODO: Implémenter l'upload d'avatar avec Multer et Cloudinary
-    // Cette implémentation nécessiterait la configuration de Multer et Cloudinary
-    
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Vérifier qu'un fichier a été uploadé
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun fichier image fourni'
+      });
+    }
+
+    console.log('📷 Upload avatar pour utilisateur:', {
+      userId: user._id,
+      filename: req.file.filename,
+      originalname: req.file.originalname,
+      size: req.file.size
+    });
+
+    // Supprimer l'ancien avatar s'il existe
+    if (user.avatar && user.avatarPublicId) {
+      try {
+        await cloudinaryService.deleteImage(user.avatarPublicId);
+        console.log(`🗑️ Ancien avatar supprimé: ${user.avatarPublicId}`);
+      } catch (deleteError) {
+        console.warn('⚠️ Erreur lors de la suppression de l\'ancien avatar:', deleteError.message);
+        // Ne pas échouer l'upload pour autant
+      }
+    }
+
+    // Mettre à jour l'utilisateur avec la nouvelle URL d'avatar
+    let avatarUrl = req.file.path; // URL Cloudinary
+    let publicId = req.file.filename; // Public ID Cloudinary
+
+    // En mode développement sans Cloudinary
+    if (!cloudinaryService.isAvailable()) {
+      avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.firstName + ' ' + user.lastName)}&size=400&background=007bff&color=fff`;
+      publicId = null;
+    }
+
+    user.avatar = avatarUrl;
+    user.avatarPublicId = publicId;
+    await user.save({ validateBeforeSave: false });
+
+    console.log(`✅ Avatar mis à jour pour ${user.email}: ${avatarUrl}`);
+
     res.json({
       success: true,
       message: 'Avatar uploadé avec succès',
       data: {
-        avatarUrl: 'https://cloudinary.com/avatar-url'
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          avatar: user.avatar
+        },
+        avatarUrl: user.avatar,
+        publicId: user.avatarPublicId
       }
     });
   } catch (error) {
-    console.error('Erreur uploadAvatar:', error);
+    console.error('❌ Erreur uploadAvatar:', error);
+    
+    // Nettoyer le fichier uploadé en cas d'erreur
+    if (req.file && req.file.filename && cloudinaryService.isAvailable()) {
+      try {
+        await cloudinaryService.deleteImage(req.file.filename);
+      } catch (cleanupError) {
+        console.warn('⚠️ Erreur nettoyage fichier:', cleanupError.message);
+      }
+    }
+
     res.status(500).json({
       success: false,
       error: 'Erreur lors de l\'upload de l\'avatar'
+    });
+  }
+};
+
+// @desc    Upload d'avatar via base64 (pour mobile)
+// @route   POST /api/users/upload-avatar-base64
+// @access  Private
+const uploadAvatarBase64 = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    const { imageData, filename } = req.body;
+
+    if (!imageData) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données d\'image requises (base64)'
+      });
+    }
+
+    // Valider le format base64
+    if (!imageData.startsWith('data:image/')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Format d\'image invalide. Utilisez une image en base64.'
+      });
+    }
+
+    console.log('📷 Upload avatar base64 pour utilisateur:', {
+      userId: user._id,
+      filename: filename || 'image.jpg',
+      dataLength: imageData.length
+    });
+
+    // Supprimer l'ancien avatar s'il existe
+    if (user.avatar && user.avatarPublicId) {
+      try {
+        await cloudinaryService.deleteImage(user.avatarPublicId);
+        console.log(`🗑️ Ancien avatar supprimé: ${user.avatarPublicId}`);
+      } catch (deleteError) {
+        console.warn('⚠️ Erreur lors de la suppression de l\'ancien avatar:', deleteError.message);
+      }
+    }
+
+    // Upload vers Cloudinary
+    const uploadOptions = {
+      folder: 'partenaire-magb/avatars',
+      transformation: [
+        { width: 400, height: 400, crop: 'fill', gravity: 'face' },
+        { quality: 'auto:good' },
+        { format: 'webp' }
+      ],
+      public_id: `avatar_${user._id}_${Date.now()}`
+    };
+
+    const uploadResult = await cloudinaryService.uploadImage(imageData, uploadOptions);
+
+    // Mettre à jour l'utilisateur
+    user.avatar = uploadResult.secure_url;
+    user.avatarPublicId = uploadResult.public_id;
+    await user.save({ validateBeforeSave: false });
+
+    console.log(`✅ Avatar base64 mis à jour pour ${user.email}: ${uploadResult.secure_url}`);
+
+    res.json({
+      success: true,
+      message: 'Avatar uploadé avec succès',
+      data: {
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          avatar: user.avatar
+        },
+        avatarUrl: user.avatar,
+        publicId: user.avatarPublicId,
+        uploadInfo: {
+          width: uploadResult.width,
+          height: uploadResult.height,
+          format: uploadResult.format,
+          size: uploadResult.bytes
+        }
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erreur uploadAvatarBase64:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Erreur lors de l\'upload de l\'avatar'
     });
   }
 };
@@ -980,6 +1144,7 @@ module.exports = {
   getUserDonations,
   getUserStats,
   uploadAvatar,
+  uploadAvatarBase64,
   updateUserPreferences,
   deleteUserAccount,
   getLeaderboard,
