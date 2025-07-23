@@ -46,25 +46,12 @@ const profileSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  employer: String,
-  monthlyIncome: {
-    type: Number,
-    min: [0, 'Le revenu ne peut pas être négatif']
-  },
   
   // Informations ecclésiastiques
   churchMembership: {
     isChurchMember: {
       type: Boolean,
       default: false
-    },
-    churchName: String,
-    membershipDate: Date,
-    baptismDate: Date,
-    ministry: String, // Ministère dans l'église
-    churchRole: {
-      type: String,
-      enum: ['member', 'deacon', 'elder', 'pastor', 'evangelist', 'other']
     }
   },
   
@@ -124,7 +111,7 @@ const profileSchema = new mongoose.Schema({
     },
     donationCategories: [{
       type: String,
-      enum: ['soutien', 'tithe', 'offering', 'building', 'missions', 'charity', 'education', 'youth', 'women', 'men']
+      enum: ['don_mensuel', 'don_ponctuel', 'don_libre', 'don_concert_femmes', 'don_ria_2025']
     }]
   },
   
@@ -147,54 +134,9 @@ const profileSchema = new mongoose.Schema({
     }
   },
   
-  // Préférences de communication
-  communicationPreferences: {
-    language: {
-      type: String,
-      enum: ['fr', 'en'],
-      default: 'fr'
-    },
-    preferredContactMethod: {
-      type: String,
-      enum: ['email', 'sms', 'phone', 'whatsapp'],
-      default: 'email'
-    },
-    receiveNewsletters: {
-      type: Boolean,
-      default: true
-    },
-    receiveEventNotifications: {
-      type: Boolean,
-      default: true
-    },
-    receiveDonationReminders: {
-      type: Boolean,
-      default: true
-    }
-  },
+
   
-  // Compétences et disponibilités pour le bénévolat
-  volunteer: {
-    isAvailable: {
-      type: Boolean,
-      default: false
-    },
-    skills: [String],
-    availability: {
-      days: [{
-        type: String,
-        enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
-      }],
-      timeSlots: [{
-        start: String, // Format HH:MM
-        end: String    // Format HH:MM
-      }]
-    },
-    interests: [{
-      type: String,
-      enum: ['teaching', 'music', 'technical', 'administration', 'counseling', 'children', 'youth', 'elderly']
-    }]
-  },
+
   
   // Informations sur la famille
   familyInfo: {
@@ -210,15 +152,7 @@ const profileSchema = new mongoose.Schema({
         type: String,
         enum: ['male', 'female']
       }
-    }],
-    spouse: {
-      name: String,
-      dateOfBirth: Date,
-      isChurchMember: {
-        type: Boolean,
-        default: false
-      }
-    }
+    }]
   },
   
   // Historique et notes administratives
@@ -306,8 +240,6 @@ profileSchema.methods.calculateCompletionPercentage = function() {
   
   const optionalFields = [
     'maritalStatus',
-    'employer',
-    'monthlyIncome',
     'churchMembership.isChurchMember',
     'donationPreferences.preferredAmount',
     'donationPreferences.preferredFrequency'

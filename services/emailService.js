@@ -172,7 +172,7 @@ class EmailService {
             <a href="${verificationUrl}">${verificationUrl}</a></small></p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -224,7 +224,7 @@ class EmailService {
             <p>Si vous n'avez pas demandé cette vérification, vous pouvez ignorer cet email.</p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -277,7 +277,7 @@ class EmailService {
             <a href="${resetUrl}">${resetUrl}</a></small></p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -329,7 +329,7 @@ class EmailService {
             <p>Si vous n'avez pas demandé cette réinitialisation, vous pouvez ignorer cet email.</p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -378,7 +378,7 @@ class EmailService {
             <p>Que Dieu vous bénisse pour votre générosité ! 🙏</p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -426,7 +426,7 @@ class EmailService {
             <p><small>Ce reçu peut être utilisé à des fins fiscales selon la réglementation en vigueur.</small></p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -473,7 +473,7 @@ class EmailService {
             <p>Pour modifier ou annuler ce don récurrent, connectez-vous à votre compte.</p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -520,7 +520,7 @@ class EmailService {
             <p>Temps de réponse estimé : ${this.getResponseTime(ticketDetails.priority)}</p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -570,7 +570,7 @@ class EmailService {
             <p>Que Dieu vous bénisse ! 🙏</p>
           </div>
           <div class="footer">
-            <p>© 2023 PARTENAIRE MAGB - Tous droits réservés</p>
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
           </div>
         </div>
       </body>
@@ -585,18 +585,11 @@ class EmailService {
 
   getCategoryLabel(category) {
     const labels = {
-      'soutien': 'Soutien',
-      'tithe': 'Dîme',
-      'offering': 'Offrande',
-      'building': 'Construction',
-      'missions': 'Missions',
-      'charity': 'Charité',
-      'education': 'Éducation',
-      'youth': 'Jeunesse',
-      'women': 'Femmes',
-      'men': 'Hommes',
-      'special': 'Événement spécial',
-      'emergency': 'Urgence'
+      'don_mensuel': 'Don mensuel',
+      'don_ponctuel': 'Don ponctuel',
+      'don_libre': 'Don libre',
+      'don_concert_femmes': 'Don Concert des Femmes',
+      'don_ria_2025': 'Don RIA 2025'
     };
     return labels[category] || category;
   }

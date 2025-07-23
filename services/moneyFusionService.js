@@ -10,6 +10,21 @@ class MoneyFusionService {
   }
 
   /**
+   * Générer l'URL de callback mobile pour MoneyFusion
+   */
+  generateMobileCallbackUrl(transactionId, donationId, status = 'completed') {
+    return `partenaireMagb://payment/return?transactionId=${transactionId}&donationId=${donationId}&status=${status}`;
+  }
+
+  /**
+   * Générer l'URL de callback web (fallback)
+   */
+  generateWebCallbackUrl(transactionId, donationId, status = 'completed') {
+    const baseUrl = process.env.BACKEND_URL || process.env.FRONTEND_URL || 'https://partenairemagb.com';
+    return `${baseUrl}/api/payments/callback?transactionId=${transactionId}&donationId=${donationId}&status=${status}&provider=moneyfusion`;
+  }
+
+  /**
    * Initialiser un paiement MoneyFusion
    */
   async initializePayment({
@@ -25,6 +40,7 @@ class MoneyFusionService {
       const payment = new FusionPay(this.apiUrl);
 
       console.log('customerInfo', customerInfo);
+      console.log('📱 Callback URL MoneyFusion:', callbackUrl);
 
       // Configurer le paiement avec l'API fluide
       payment
@@ -39,7 +55,7 @@ class MoneyFusionService {
           platform: 'partenaire-magb',
           type: 'donation'
         })
-        .returnUrl(`${process.env.FRONTEND_URL}/payment/success?provider=moneyfusion`)
+        .returnUrl(callbackUrl || this.generateMobileCallbackUrl('MONEYFUSION_' + Date.now(), donationId))
         .webhookUrl(`${process.env.BACKEND_URL || process.env.FRONTEND_URL}/api/webhooks/moneyfusion`);
 
       // Effectuer le paiement
@@ -571,6 +587,89 @@ class MoneyFusionService {
     } catch (error) {
       console.error('❌ Erreur vérification paiements en attente:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Traiter un callback de paiement MoneyFusion et rediriger vers l'app mobile
+   */
+  async processCallback(callbackData) {
+    try {
+      const { token, statut, donation_id, transaction_id, numeroTransaction, Montant } = callbackData;
+      
+      console.log('📱 Callback MoneyFusion reçu:', { token, statut, donation_id, transaction_id, numeroTransaction, Montant });
+      
+      // Déterminer le statut selon la réponse MoneyFusion
+      let status = 'completed';
+      if (statut === 'paid') {
+        status = 'completed';
+      } else if (statut === 'failed' || statut === 'cancelled' || statut === 'no paid') {
+        status = 'failed';
+      } else if (statut === 'pending') {
+        status = 'pending';
+      } else {
+        status = 'pending'; // Par défaut
+      }
+      
+      // Utiliser les données disponibles pour l'URL de callback
+      const transactionId = transaction_id || token || numeroTransaction || `MF_${Date.now()}`;
+      const donationId = donation_id || 'UNKNOWN';
+      
+      // Générer l'URL de deep link pour l'app mobile
+      const mobileCallbackUrl = this.generateMobileCallbackUrl(
+        transactionId,
+        donationId,
+        status
+      );
+      
+      console.log('🔗 Redirection MoneyFusion vers:', mobileCallbackUrl);
+      
+      // Optionnel : Enregistrer le callback pour audit
+      try {
+        const Payment = require('../models/Payment');
+        const payment = await Payment.findOne({ 
+          'moneyfusion.token': token,
+          provider: 'moneyfusion'
+        });
+        
+        if (payment) {
+          payment.addToHistory(
+            'callback_received',
+            `Callback MoneyFusion reçu: ${statut}`,
+            null,
+            {
+              callbackData,
+              mobileRedirectUrl: mobileCallbackUrl,
+              status: status
+            }
+          );
+          await payment.save();
+        }
+      } catch (auditError) {
+        console.warn('⚠️ Erreur audit callback:', auditError.message);
+      }
+      
+      return {
+        success: true,
+        redirectUrl: mobileCallbackUrl,
+        status,
+        transactionId,
+        donationId,
+        originalStatus: statut,
+        amount: Montant
+      };
+      
+    } catch (error) {
+      console.error('Erreur processCallback MoneyFusion:', error);
+      
+      // En cas d'erreur, rediriger vers une page d'erreur
+      const fallbackUrl = this.generateMobileCallbackUrl('ERROR', 'UNKNOWN', 'failed');
+      
+      return {
+        success: false,
+        redirectUrl: fallbackUrl,
+        error: error.message
+      };
     }
   }
 

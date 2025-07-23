@@ -24,7 +24,7 @@ const createDonationValidation = [
     .isIn(['XOF', 'EUR', 'USD'])
     .withMessage('Devise non supportée'),
   body('category')
-    .isIn(['soutien', 'tithe', 'offering', 'building', 'missions', 'charity', 'education', 'youth', 'women', 'men', 'special', 'emergency'])
+    .isIn(['don_mensuel', 'don_ponctuel', 'don_libre', 'don_concert_femmes', 'don_ria_2025'])
     .withMessage('Catégorie invalide'),
   body('type')
     .isIn(['one_time', 'recurring'])
@@ -66,7 +66,7 @@ const getDonationsValidation = [
     .withMessage('Statut invalide'),
   query('category')
     .optional()
-    .isIn(['soutien', 'tithe', 'offering', 'building', 'missions', 'charity', 'education', 'youth', 'women', 'men', 'special', 'emergency'])
+    .isIn(['don_mensuel', 'don_ponctuel', 'don_libre', 'don_concert_femmes', 'don_ria_2025'])
     .withMessage('Catégorie invalide'),
   query('type')
     .optional()

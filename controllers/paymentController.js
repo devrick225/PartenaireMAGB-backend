@@ -8,6 +8,28 @@ const fusionPayService = require('../services/fusionPayService');
 const moneyFusionService = require('../services/moneyFusionService');
 const emailService = require('../services/emailService');
 
+// Fonction utilitaire pour générer l'URL de callback mobile
+const generateMobileCallbackUrl = (transactionId, donationId, status = 'completed') => {
+  return `partenaireMagb://payment/return?transactionId=${transactionId}&donationId=${donationId}&status=${status}`;
+};
+
+// Fonction pour générer l'URL de callback après initialisation
+const generateCallbackUrlAfterInit = (initializationResult, donationId, provider) => {
+  const transactionId = initializationResult.transactionId || 
+                       initializationResult.paymentIntentId || 
+                       initializationResult.orderId || 
+                       initializationResult.token ||
+                       `${provider.toUpperCase()}_${Date.now()}`;
+  
+  return generateMobileCallbackUrl(transactionId, donationId);
+};
+
+// Fonction utilitaire pour générer l'URL de callback web (fallback)
+const generateWebCallbackUrl = (transactionId, donationId, status = 'completed') => {
+  const baseUrl = process.env.FRONTEND_URL || 'https://partenairemagb.com';
+  return `${baseUrl}/payment/callback?transactionId=${transactionId}&donationId=${donationId}&status=${status}`;
+};
+
 // @desc    Initialiser un paiement
 // @route   POST /api/payments/initialize
 // @access  Private
@@ -114,7 +136,7 @@ const initializePayment = async (req, res) => {
             currency: donation.currency,
             customerInfo,
             donationId,
-            callbackUrl: `${process.env.FRONTEND_URL}/payment/callback`
+            callbackUrl: generateMobileCallbackUrl('CINETPAY_' + Date.now(), donationId)
           });
 
           payment.cinetpay = {
@@ -145,7 +167,7 @@ const initializePayment = async (req, res) => {
             amount: donation.amount,
             currency: donation.currency,
             donationId,
-            callbackUrl: `${process.env.FRONTEND_URL}/payment/callback`
+            callbackUrl: generateMobileCallbackUrl('PAYPAL_' + Date.now(), donationId)
           });
 
           payment.paypal = {
@@ -160,7 +182,7 @@ const initializePayment = async (req, res) => {
             currency: donation.currency,
             customerInfo,
             donationId,
-            callbackUrl: `${process.env.FRONTEND_URL}/payment/callback`,
+            callbackUrl: generateMobileCallbackUrl('FUSIONPAY_' + Date.now(), donationId),
             paymentMethod,
             description: `Don ${donation.category} - PARTENAIRE MAGB`
           });
@@ -178,12 +200,15 @@ const initializePayment = async (req, res) => {
           break;
 
         case 'moneyfusion':
+          // Générer directement l'URL de callback mobile pour MoneyFusion
+          const mobileCallbackUrl = generateMobileCallbackUrl('MONEYFUSION_' + Date.now(), donationId);
+          
           initializationResult = await moneyFusionService.initializePayment({
             amount: donation.amount,
             currency: donation.currency,
             customerInfo,
             donationId,
-            callbackUrl: `${process.env.FRONTEND_URL}/payment/callback`,
+            callbackUrl: mobileCallbackUrl,
             description: `Don ${donation.category} - PARTENAIRE MAGB`
           });
 
@@ -272,6 +297,50 @@ const initializePayment = async (req, res) => {
       success: false,
       error: 'Erreur lors de l\'initialisation du paiement'
     });
+  }
+};
+
+// @desc    Callback de paiement - redirige vers l'app mobile
+// @route   GET /api/payments/callback
+// @access  Public
+const paymentCallback = async (req, res) => {
+  try {
+    const { transactionId, donationId, status, paymentId, provider, token, statut } = req.query;
+    
+    console.log('📱 Callback de paiement reçu:', { transactionId, donationId, status, paymentId, provider, token, statut });
+    
+    let mobileCallbackUrl;
+    
+    // Traitement spécial pour MoneyFusion
+    if (provider === 'moneyfusion' || token) {
+      const callbackResult = await moneyFusionService.processCallback({
+        token,
+        statut,
+        donation_id: donationId,
+        transaction_id: transactionId
+      });
+      
+      mobileCallbackUrl = callbackResult.redirectUrl;
+    } else {
+      // Générer l'URL de deep link pour l'app mobile (autres providers)
+      mobileCallbackUrl = generateMobileCallbackUrl(
+        transactionId || paymentId, 
+        donationId, 
+        status || 'completed'
+      );
+    }
+    
+    console.log('🔗 Redirection vers:', mobileCallbackUrl);
+    
+    // Rediriger vers l'app mobile
+    res.redirect(mobileCallbackUrl);
+    
+  } catch (error) {
+    console.error('Erreur paymentCallback:', error);
+    
+    // En cas d'erreur, rediriger vers une page d'erreur ou l'app
+    const fallbackUrl = generateMobileCallbackUrl('ERROR', 'UNKNOWN', 'failed');
+    res.redirect(fallbackUrl);
   }
 };
 
@@ -833,6 +902,7 @@ const getAllPaymentsByDonationId = async (req, res) => {
 
 module.exports = {
   initializePayment,
+  paymentCallback,
   getPayment,
   verifyPayment,
   refundPayment,

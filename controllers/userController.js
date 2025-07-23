@@ -73,14 +73,10 @@ const getProfile = async (req, res) => {
           gender: profile.gender,
           maritalStatus: profile.maritalStatus,
           occupation: profile.occupation,
-          employer: profile.employer,
-          monthlyIncome: profile.monthlyIncome,
           address: profile.address,
           emergencyContact: profile.emergencyContact,
           churchMembership: profile.churchMembership,
           donationPreferences: profile.donationPreferences,
-          communicationPreferences: profile.communicationPreferences,
-          volunteer: profile.volunteer,
           familyInfo: profile.familyInfo,
           isComplete: profile.isComplete,
           completionPercentage: profile.profileCompletionPercentage,
@@ -160,8 +156,6 @@ const updateProfile = async (req, res) => {
       profile.markModified('emergencyContact');
       profile.markModified('churchMembership');
       profile.markModified('donationPreferences');
-      profile.markModified('communicationPreferences');
-      profile.markModified('volunteer');
       profile.markModified('familyInfo');
       
       await profile.save();
@@ -215,14 +209,10 @@ const updateProfile = async (req, res) => {
           gender: profile.gender,
           maritalStatus: profile.maritalStatus,
           occupation: profile.occupation,
-          employer: profile.employer,
-          monthlyIncome: profile.monthlyIncome,
           address: profile.address,
           emergencyContact: profile.emergencyContact,
           churchMembership: profile.churchMembership,
           donationPreferences: profile.donationPreferences,
-          communicationPreferences: profile.communicationPreferences,
-          volunteer: profile.volunteer,
           familyInfo: profile.familyInfo,
           isComplete: profile.isComplete,
           completionPercentage: profile.profileCompletionPercentage,
@@ -928,6 +918,32 @@ const updateUserPreferences = async (req, res) => {
   }
 };
 
+// @desc    Récupérer les préférences utilisateur
+// @route   GET /api/users/preferences
+// @access  Private
+const getUserPreferences = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: user.preferences
+    });
+  } catch (error) {
+    console.error('Erreur getUserPreferences:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des préférences'
+    });
+  }
+};
+
 // @desc    Supprimer son compte
 // @route   DELETE /api/users/account
 // @access  Private
@@ -1146,6 +1162,7 @@ module.exports = {
   uploadAvatar,
   uploadAvatarBase64,
   updateUserPreferences,
+  getUserPreferences,
   deleteUserAccount,
   getLeaderboard,
   downloadPersonalData

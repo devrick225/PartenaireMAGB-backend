@@ -3,6 +3,7 @@ const { body, query } = require('express-validator');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 const {
   initializePayment,
+  paymentCallback,
   getPayment,
   verifyPayment,
   refundPayment,
@@ -80,6 +81,9 @@ const getPaymentStatsValidation = [
     .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money'])
     .withMessage('Fournisseur invalide')
 ];
+
+// GET /api/payments/callback - Callback de paiement (public)
+router.get('/callback', paymentCallback);
 
 // POST /api/payments/initialize - Initialiser un paiement
 router.post('/initialize', authenticateToken, initializePaymentValidation, initializePayment);

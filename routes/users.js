@@ -15,7 +15,8 @@ const {
   updateUserPreferences,
   deleteUserAccount,
   getLeaderboard,
-  downloadPersonalData
+  downloadPersonalData,
+  getUserPreferences
 } = require('../controllers/userController');
 const cloudinaryService = require('../services/cloudinaryService');
 
@@ -43,16 +44,6 @@ const updateProfileValidation = [
     .trim()
     .isLength({ min: 2, max: 100 })
     .withMessage('Profession invalide'),
-  body('employer')
-    .optional()
-    .trim()
-    .isLength({ max: 100 })
-    .withMessage('Employeur invalide'),
-  body('monthlyIncome')
-    .optional()
-    .isNumeric()
-    .isFloat({ min: 0 })
-    .withMessage('Revenu mensuel invalide'),
   body('address.street')
     .optional()
     .trim()
@@ -221,5 +212,9 @@ router.get('/:id/stats', authenticateToken, authorizeOwnerOrAdmin, getUserStats)
 
 // GET /api/users/profile/download-data - Télécharger les données personnelles
 router.get('/profile/download-data', authenticateToken, downloadPersonalData);
+
+// GET /api/users/preferences - Récupérer les préférences utilisateur
+router.get('/preferences', authenticateToken, getUserPreferences);
+
 
 module.exports = router; 

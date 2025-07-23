@@ -27,18 +27,11 @@ const donationSchema = new mongoose.Schema({
   category: {
     type: String,
     enum: [
-      'soutien',      // Soutien
-      'tithe',        // Dîme
-      'offering',     // Offrande
-      'building',     // Construction
-      'missions',     // Missions
-      'charity',      // Charité
-      'education',    // Éducation
-      'youth',        // Jeunesse
-      'women',        // Femmes
-      'men',          // Hommes
-      'special',      // Événement spécial
-      'emergency'     // Urgence
+      'don_mensuel',           // Don mensuel
+      'don_ponctuel',         // Don ponctuel
+      'don_libre',            // Don libre
+      'don_concert_femmes',   // Don Concert des Femmes
+      'don_ria_2025'          // Don RIA 2025
     ],
     required: [true, 'La catégorie est requise']
   },

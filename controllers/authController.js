@@ -66,9 +66,6 @@ const register = async (req, res) => {
         address: {
           country: user.country
         },
-        communicationPreferences: {
-          language: user.language
-        },
         donationPreferences: {
           preferredFrequency: 'monthly'
         },
