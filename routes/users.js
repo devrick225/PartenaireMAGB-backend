@@ -174,6 +174,9 @@ router.delete('/account', authenticateToken, deleteAccountValidation, deleteUser
 // GET /api/users - Liste des utilisateurs (admin seulement)
 router.get('/', authenticateToken, authorizeRoles('admin', 'moderator', 'support_agent'), getUsersValidation, getUsers);
 
+// GET /api/users/preferences - Récupérer les préférences utilisateur (doit être avant /:id)
+router.get('/preferences', authenticateToken, getUserPreferences);
+
 // GET /api/users/:id - Obtenir un utilisateur par ID (admin ou propriétaire)
 router.get('/:id', authenticateToken, authorizeOwnerOrAdmin, getUser);
 
@@ -212,9 +215,5 @@ router.get('/:id/stats', authenticateToken, authorizeOwnerOrAdmin, getUserStats)
 
 // GET /api/users/profile/download-data - Télécharger les données personnelles
 router.get('/profile/download-data', authenticateToken, downloadPersonalData);
-
-// GET /api/users/preferences - Récupérer les préférences utilisateur
-router.get('/preferences', authenticateToken, getUserPreferences);
-
 
 module.exports = router; 

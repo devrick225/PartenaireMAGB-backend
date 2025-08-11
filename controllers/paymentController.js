@@ -6,6 +6,7 @@ const User = require('../models/User');
 const paymentService = require('../services/paymentService');
 const fusionPayService = require('../services/fusionPayService');
 const moneyFusionService = require('../services/moneyFusionService');
+const paydunyaService = require('../services/paydunyaService');
 const emailService = require('../services/emailService');
 
 // Fonction utilitaire pour générer l'URL de callback mobile
@@ -116,14 +117,16 @@ const initializePayment = async (req, res) => {
     // Préparer les données client
     const customerInfo = {
       userId: req.user.id,
-      name: req.user.firstName,
-      surname: req.user.lastName,
+      name: req.user.fullName, // Utiliser le nom complet au lieu de séparer firstName/lastName
+      surname: '', // Vide car nous utilisons le nom complet dans name
       email: req.user.email,
       phone: customerPhone || req.user.phone,
       address: '',
       city: req.user.city,
       country: req.user.country
     };
+
+
 
     let initializationResult;
 
@@ -184,7 +187,7 @@ const initializePayment = async (req, res) => {
             donationId,
             callbackUrl: generateMobileCallbackUrl('FUSIONPAY_' + Date.now(), donationId),
             paymentMethod,
-            description: `Don ${donation.category} - PARTENAIRE MAGB`
+            description: 'DON PARTENAIRE MAGB'
           });
 
           payment.fusionpay = {
@@ -209,7 +212,7 @@ const initializePayment = async (req, res) => {
             customerInfo,
             donationId,
             callbackUrl: mobileCallbackUrl,
-            description: `Don ${donation.category} - PARTENAIRE MAGB`
+            description: 'DON PARTENAIRE MAGB'
           });
 
           payment.moneyfusion = {
@@ -227,6 +230,86 @@ const initializePayment = async (req, res) => {
               currency: donation.currency,
               platform: 'partenaire-magb',
               type: 'donation'
+            }
+          };
+          break;
+
+        case 'paydunya':
+          // Initialiser le paiement PayDunya
+          console.log('🔄 Initialisation paiement PayDunya:', {
+            amount: donation.amount,
+            currency: donation.currency,
+            donationId,
+            paymentMethod
+          });
+          
+          const paydunyaCallbackUrl = generateMobileCallbackUrl('PAYDUNYA_' + Date.now(), donationId);
+          
+          try {
+            initializationResult = await paydunyaService.initializePayment({
+              amount: donation.amount,
+              currency: donation.currency,
+              customerInfo,
+              donationId,
+              callbackUrl: paydunyaCallbackUrl,
+              paymentMethod,
+              description: 'DON PARTENAIRE MAGB'
+            });
+            
+            console.log('✅ Paiement PayDunya initialisé:', {
+              transactionId: initializationResult.transactionId,
+              paydunyaToken: initializationResult.paydunyaToken
+            });
+          } catch (paydunyaError) {
+            console.error('❌ Erreur initialisation PayDunya:', paydunyaError);
+            return res.status(500).json({
+              success: false,
+              error: `Erreur lors de l'initialisation PayDunya: ${paydunyaError.message}`
+            });
+          }
+
+          payment.paydunya = {
+            token: initializationResult.paydunyaToken,
+            transactionId: initializationResult.transactionId,
+            paymentUrl: initializationResult.paymentUrl,
+            invoiceUrl: initializationResult.invoice_url,
+            status: 'pending',
+            responseCode: null,
+            responseText: null,
+            paymentMethod: paymentMethod,
+            customerInfo: {
+              name: `${customerInfo.name} ${customerInfo.surname || ''}`.trim(),
+              email: customerInfo.email,
+              phone: customerInfo.phone
+            },
+            fees: paydunyaService.calculateFees(donation.amount, donation.currency, paymentMethod),
+            expiresAt: initializationResult.expiresAt,
+            
+            // Données de la facture PayDunya
+            invoice: {
+              totalAmount: donation.amount,
+              description: 'DON PARTENAIRE MAGB',
+              currency: donation.currency
+            },
+            
+            // Données personnalisées
+            customData: {
+              donationId: donationId,
+              customerId: req.user.id,
+              platform: 'partenaire-magb',
+              transactionId: initializationResult.transactionId
+            },
+            
+            // Réponse API complète pour debug
+            rawResponse: initializationResult.rawResponse,
+            
+            metadata: {
+              donation_id: donationId,
+              customer_email: customerInfo.email,
+              currency: donation.currency,
+              platform: 'partenaire-magb',
+              type: 'donation',
+              payment_method: paymentMethod
             }
           };
           break;

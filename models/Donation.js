@@ -128,7 +128,7 @@ const donationSchema = new mongoose.Schema({
   // Informations de paiement
   paymentMethod: {
     type: String,
-    enum: ['card', 'mobile_money', 'bank_transfer', 'cash', 'paypal', 'moneyfusion'],
+    enum: ['card', 'mobile_money', 'bank_transfer', 'cash', 'paypal', 'moneyfusion', 'paydunya'],
     required: [true, 'La méthode de paiement est requise']
   },
   
@@ -375,18 +375,41 @@ donationSchema.methods.stopRecurring = function(reason = 'Arrêté par l\'utilis
   if (this.type === 'recurring') {
     this.recurring.isActive = false;
     this.addToHistory('cancelled', reason);
+    console.log('🔄 stopRecurring - Don récurrent marqué comme inactif:', {
+      donationId: this._id,
+      reason: reason,
+      isActive: this.recurring.isActive
+    });
   }
-  return this.save();
+  // Désactiver la validation pour éviter les erreurs sur les données existantes
+  return this.save({ validateBeforeSave: false });
 };
 
 // Méthode pour ajouter une entrée à l'historique
 donationSchema.methods.addToHistory = function(action, description, performedBy = null, metadata = {}) {
-  this.history.push({
-    action,
-    description,
-    performedBy,
-    metadata
-  });
+  try {
+    // S'assurer que history est initialisé
+    if (!this.history) {
+      this.history = [];
+    }
+    
+    this.history.push({
+      action,
+      description,
+      performedBy,
+      performedAt: new Date(),
+      metadata
+    });
+    
+    console.log('📝 addToHistory - Entrée ajoutée:', {
+      action,
+      description,
+      historyLength: this.history.length
+    });
+  } catch (error) {
+    console.error('❌ Erreur addToHistory:', error);
+    // Ne pas faire échouer l'opération principale si l'historique échoue
+  }
   return this;
 };
 

@@ -25,6 +25,38 @@ class MoneyFusionService {
   }
 
   /**
+   * Enrichir l'URL de paiement avec les informations du don
+   */
+  enrichPaymentUrl(baseUrl, donationData) {
+    try {
+      const { donationId, amount, currency, description, customerInfo } = donationData;
+      
+      // Vérifier si l'URL contient déjà des paramètres
+      const hasParams = baseUrl.includes('?');
+      const separator = hasParams ? '&' : '?';
+      
+      // Construire les paramètres enrichis
+      const enrichedParams = [
+        `donationId=${donationId}`,
+        `amount=${amount}`,
+        `currency=${currency}`,
+        `description=${encodeURIComponent(description)}`,
+        `customerName=${encodeURIComponent(customerInfo.name)}`,
+        `customerEmail=${encodeURIComponent(customerInfo.email)}`,
+        `platform=partenaire-magb`,
+        `timestamp=${Date.now()}`
+      ];
+      
+      const enrichedUrl = `${baseUrl}${separator}${enrichedParams.join('&')}`;
+      
+      return enrichedUrl;
+    } catch (error) {
+      console.error('❌ Erreur lors de l\'enrichissement de l\'URL:', error);
+      return baseUrl; // Retourner l'URL originale en cas d'erreur
+    }
+  }
+
+  /**
    * Initialiser un paiement MoneyFusion
    */
   async initializePayment({
@@ -33,20 +65,23 @@ class MoneyFusionService {
     customerInfo,
     donationId,
     callbackUrl,
-    description = 'Don PARTENAIRE MAGB'
+    description = 'DON PARTENAIRE MAGB'
   }) {
     try {
       // Créer une instance FusionPay
       const payment = new FusionPay(this.apiUrl);
 
-      console.log('customerInfo', customerInfo);
       console.log('📱 Callback URL MoneyFusion:', callbackUrl);
 
       // Configurer le paiement avec l'API fluide
+      
+      // Forcer l'utilisation du nom complet et nettoyer les espaces
+      const cleanClientName = customerInfo.name.trim().replace(/\s+/g, ' ');
+      
       payment
         .totalPrice(parseFloat(amount))
         .addArticle(description, parseFloat(amount))
-        .clientName(`${customerInfo.name} ${customerInfo.surname}`)
+        .clientName(cleanClientName) // Utiliser le nom nettoyé
         .clientNumber(customerInfo.phone)
         .addInfo({
           donation_id: donationId,
@@ -62,10 +97,45 @@ class MoneyFusionService {
       const response = await payment.makePayment();
 
       if (response.statut) {
+        // Vérifier si l'URL contient le nom et essayer de le corriger
+        let paymentUrl = response.url;
+        
+        // Remplacer le nom du client par "DON PARTENAIRE MAGB" dans l'URL
+        if (paymentUrl) {
+          // Pattern pour trouver le nom dans l'URL (après le montant et avant les paramètres)
+          const urlPattern = /\/payment\/[^\/]+\/\d+\/([^?]+)/;
+          const match = paymentUrl.match(urlPattern);
+          
+          if (match) {
+            const currentName = match[1];
+            // Remplacer le nom par "DON PARTENAIRE MAGB"
+            paymentUrl = paymentUrl.replace(currentName, 'DON PARTENAIRE MAGB');
+          }
+        }
+        
+        // Enrichir l'URL avec toutes les informations du don
+        if (paymentUrl) {
+          const donationData = {
+            donationId,
+            amount,
+            currency,
+            description,
+            customerInfo
+          };
+          
+          paymentUrl = this.enrichPaymentUrl(paymentUrl, donationData);
+        }
+        
+        // Vérifier aussi s'il y a d'autres noms fixes dans l'URL
+        if (paymentUrl && !paymentUrl.includes(customerInfo.name.trim()) && !paymentUrl.includes(cleanClientName)) {
+          console.log('⚠️ WARNING - URL ne contient pas le nom du client actuel');
+          console.log('🔍 URL actuelle:', paymentUrl);
+        }
+
         return {
           success: true,
           transactionId: response.token,
-          paymentUrl: response.url,
+          paymentUrl: paymentUrl,
           token: response.token,
           message: response.message || 'Paiement initialisé avec succès'
         };

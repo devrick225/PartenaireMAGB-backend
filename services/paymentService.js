@@ -36,15 +36,15 @@ class PaymentService {
         transaction_id: transactionId,
         amount: parseInt(amount), // Convertir en entier
         currency: currency || 'XOF',
-        description: `Don PARTENAIRE MAGB - ${donationId}`,
+        description: 'DON PARTENAIRE MAGB',
         return_url: callbackUrl,
         notify_url: `${process.env.BACKEND_URL || process.env.FRONTEND_URL}/api/webhooks/cinetpay`,
         channels: 'ALL', // ALL, MOBILE_MONEY, CREDIT_CARD, WALLET
         lang: 'FR',
         
         // Informations client obligatoires pour les cartes bancaires
-        customer_name: customerInfo.name || customerInfo.firstName,
-        customer_surname: customerInfo.surname || customerInfo.lastName,
+        customer_name: customerInfo.name, // Utiliser directement le nom complet
+        customer_surname: '', // Vide car nous utilisons le nom complet dans customer_name
         customer_email: customerInfo.email,
         customer_phone_number: customerInfo.phone,
         customer_address: customerInfo.address || 'Abidjan',
@@ -300,7 +300,7 @@ class PaymentService {
           donationId: donationId.toString(),
           userId: customerInfo.userId.toString()
         },
-        description: `Don - ${donationId}`,
+        description: 'DON PARTENAIRE MAGB',
         receipt_email: customerInfo.email
       });
 
@@ -363,7 +363,7 @@ class PaymentService {
             currency_code: currency,
             value: amount.toString()
           },
-          description: `Don - ${donationId}`,
+          description: 'DON PARTENAIRE MAGB',
           custom_id: donationId.toString()
         }],
         application_context: {
@@ -498,7 +498,7 @@ class PaymentService {
         currency: currency,
         customer_phone: customerPhone,
         transaction_id: this.generateTransactionId(),
-        description: `Don - ${donationId}`
+        description: 'DON PARTENAIRE MAGB'
       };
 
       // API Orange Money (à implémenter selon la documentation)
@@ -537,8 +537,8 @@ class PaymentService {
           partyIdType: 'MSISDN',
           partyId: customerPhone
         },
-        payerMessage: `Don - ${donationId}`,
-        payeeNote: `Don pour PARTENAIRE MAGB`
+        payerMessage: 'DON PARTENAIRE MAGB',
+        payeeNote: 'DON PARTENAIRE MAGB'
       };
 
       // API MTN Mobile Money (à implémenter selon la documentation)
@@ -678,6 +678,10 @@ class PaymentService {
       fusionpay: {
         percentage: 2.5,
         fixed: 100
+      },
+      paydunya: {
+        percentage: 3.0,
+        fixed: 50
       },
       stripe: {
         percentage: 2.9,

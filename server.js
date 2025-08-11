@@ -12,6 +12,8 @@ const donationRoutes = require('./routes/donations');
 const paymentRoutes = require('./routes/payments');
 const ticketRoutes = require('./routes/tickets');
 const webhookRoutes = require('./routes/webhooks');
+const ministryRoutes = require('./routes/ministries');
+const documentsRoutes = require('./routes/documents');
 
 // Import des middlewares
 const errorHandler = require('./middleware/errorHandler');
@@ -62,6 +64,8 @@ app.use('/api/donations', donationRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/ministries', ministryRoutes);
+app.use('/api/documents', documentsRoutes);
 
 // Route de santé
 app.get('/health', (req, res) => {

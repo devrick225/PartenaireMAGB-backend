@@ -923,23 +923,47 @@ const updateUserPreferences = async (req, res) => {
 // @access  Private
 const getUserPreferences = async (req, res) => {
   try {
+    console.log('🔄 getUserPreferences - User ID:', req.user.id);
+    
     const user = await User.findById(req.user.id);
     if (!user) {
+      console.error('❌ getUserPreferences - Utilisateur non trouvé:', req.user.id);
       return res.status(404).json({
         success: false,
         error: 'Utilisateur non trouvé'
       });
     }
 
+    console.log('✅ getUserPreferences - Utilisateur trouvé:', {
+      id: user._id,
+      email: user.email,
+      language: user.language,
+      currency: user.currency
+    });
+
     res.json({
       success: true,
-      data: user.preferences
+      data: {
+        language: user.language || 'fr',
+        currency: user.currency || 'XOF',
+        emailNotifications: user.emailNotifications || {
+          donations: true,
+          reminders: true,
+          newsletters: false
+        },
+        smsNotifications: user.smsNotifications || {
+          donations: false,
+          reminders: false
+        },
+        timezone: user.timezone || 'Africa/Abidjan'
+      }
     });
   } catch (error) {
-    console.error('Erreur getUserPreferences:', error);
+    console.error('❌ Erreur getUserPreferences:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur lors de la récupération des préférences'
+      error: 'Erreur lors de la récupération des préférences',
+      details: error.message
     });
   }
 };

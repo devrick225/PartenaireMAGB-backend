@@ -79,7 +79,7 @@ class EmailService {
 
   // Email de confirmation de don
   async sendDonationConfirmationEmail(email, firstName, donationDetails) {
-    const subject = 'Confirmation de votre don - PARTENAIRE MAGB';
+    const subject = 'Confirmation de votre DON PARTENAIRE MAGB';
     const htmlContent = this.getDonationConfirmationTemplate(firstName, donationDetails);
     
     return await this.sendEmail(email, subject, htmlContent);
@@ -129,6 +129,13 @@ class EmailService {
     const subject = 'Bienvenue dans PARTENAIRE MAGB';
     const htmlContent = this.getWelcomeEmailTemplate(firstName);
     
+    return await this.sendEmail(email, subject, htmlContent);
+  }
+
+  // Email de bienvenue PARTENAIRE (personnalisé inscriptions)
+  async sendPartnerWelcomeEmail(email, firstName, partnerId = null) {
+    const subject = 'Bienvenue parmi les PARTENAIRES MAGB';
+    const htmlContent = this.getPartnerWelcomeEmailTemplate(firstName, partnerId);
     return await this.sendEmail(email, subject, htmlContent);
   }
 
@@ -356,15 +363,15 @@ class EmailService {
       <body>
         <div class="container">
           <div class="header">
-            <h1>✅ Don confirmé</h1>
+            <h1>✅ DON PARTENAIRE MAGB confirmé</h1>
             <p>PARTENAIRE MAGB</p>
           </div>
           <div class="content">
             <h2>Merci ${firstName} !</h2>
-            <p>Votre don a été confirmé avec succès. Voici les détails :</p>
+            <p>Votre DON PARTENAIRE MAGB a été confirmé avec succès. Voici les détails :</p>
             
             <div class="donation-details">
-              <h3>Détails du don</h3>
+              <h3>Détails du DON PARTENAIRE MAGB</h3>
               <p><strong>Montant :</strong> ${donationDetails.formattedAmount}</p>
               <p><strong>Catégorie :</strong> ${this.getCategoryLabel(donationDetails.category)}</p>
               <p><strong>Type :</strong> ${donationDetails.type === 'recurring' ? 'Récurrent' : 'Ponctuel'}</p>
@@ -405,13 +412,13 @@ class EmailService {
       <body>
         <div class="container">
           <div class="header">
-            <h1>📄 Reçu de don</h1>
+            <h1>📄 Reçu DON PARTENAIRE MAGB</h1>
             <p>PARTENAIRE MAGB</p>
           </div>
           <div class="content">
             <h2>Reçu officiel</h2>
             <p>Bonjour ${firstName},</p>
-            <p>Voici votre reçu officiel pour votre don :</p>
+            <p>Voici votre reçu officiel pour votre DON PARTENAIRE MAGB :</p>
             
             <div class="receipt">
               <h3>REÇU N° ${receiptDetails.receiptNumber}</h3>
@@ -453,15 +460,15 @@ class EmailService {
       <body>
         <div class="container">
           <div class="header">
-            <h1>🔔 Rappel de don</h1>
+            <h1>🔔 Rappel DON PARTENAIRE MAGB</h1>
             <p>PARTENAIRE MAGB</p>
           </div>
           <div class="content">
             <h2>Bonjour ${firstName},</h2>
-            <p>Votre prochain don récurrent est prévu pour bientôt :</p>
+            <p>Votre prochain DON PARTENAIRE MAGB récurrent est prévu pour bientôt :</p>
             
             <div class="reminder">
-              <h3>Détails du don récurrent</h3>
+              <h3>Détails du DON PARTENAIRE MAGB récurrent</h3>
               <p><strong>Montant :</strong> ${donationDetails.formattedAmount}</p>
               <p><strong>Fréquence :</strong> ${this.getFrequencyLabel(donationDetails.frequency)}</p>
               <p><strong>Prochaine échéance :</strong> ${new Date(donationDetails.nextPaymentDate).toLocaleDateString('fr-FR')}</p>
@@ -568,6 +575,77 @@ class EmailService {
             <p>N'hésitez pas à compléter votre profil pour une meilleure expérience.</p>
             
             <p>Que Dieu vous bénisse ! 🙏</p>
+          </div>
+          <div class="footer">
+            <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+  }
+
+  getPartnerWelcomeEmailTemplate(firstName, partnerId = null) {
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Bienvenue - PARTENAIRE MAGB</title>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.65; color: #222; }
+          .container { max-width: 640px; margin: 0 auto; padding: 24px; }
+          .header { background: linear-gradient(135deg, #335EF7 0%, #6D28D9 100%); color: white; padding: 28px; text-align: center; border-radius: 10px 10px 0 0; }
+          .content { background: #fff; padding: 24px; border: 1px solid #e5e7eb; }
+          .footer { background: #f8f9fa; padding: 16px; text-align: center; color: #666; border-radius: 0 0 10px 10px; font-size: 12px; }
+          h1, h2, h3 { margin: 0 0 8px; }
+          p { margin: 10px 0; }
+          ul { margin: 8px 0 8px 18px; }
+          .tag { display: inline-block; background: #EEF2FF; color: #3730A3; padding: 4px 8px; border-radius: 999px; font-size: 12px; margin-top: 8px; }
+          .highlight { background: #FFF7ED; border-left: 4px solid #F97316; padding: 12px; border-radius: 6px; }
+          .warning { background: #FEF2F2; border-left: 4px solid #DC2626; padding: 12px; border-radius: 6px; }
+          .coords { background: #F1F5F9; padding: 12px; border-radius: 6px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>PARTENAIRE MAGB</h1>
+            <p>Ministère d'Adoration Geneviève Brou</p>
+          </div>
+          <div class="content">
+            <h2>Shalom ${firstName || 'Adoratreur'} !</h2>
+            ${partnerId ? `<p class="tag">ID Partenaire : <strong>${partnerId}</strong></p>` : ''}
+
+            <p>C'est avec joie que nous accusons réception de votre inscription à la liste des <strong>PARTENAIRES</strong> du Ministère d'Adoration Geneviève Brou. Nous vous remercions pour votre choix d'apporter votre contribution financière à la mission du Ministère.</p>
+
+            <div class="warning">
+              <p>🛑 Être partenaire financier, c'est <strong>SEMER SPIRITUELLEMENT</strong> dans le champ de DIEU et cela fait de vous un <strong>coparticipant</strong> aux âmes sauvées, aux vies transformées. Vous n'êtes pas juste un donateur mais plutôt un <strong>Bâtisseur du Royaume</strong>, un <strong>Investisseur</strong> et DIEU ne manque jamais de récompenser fidèlement ceux qui soutiennent son œuvre.</p>
+            </div>
+
+            <p>🛑 En tant que partenaire, vous contribuez à développer et faire avancer plus rapidement l'œuvre du Seigneur. Votre soutien financier contribuera à :</p>
+            <ul>
+              <li>faciliter le lancement ou l'expansion de plusieurs projets missionnaires ou évangéliques (grands rassemblements annuels, concerts et missions tant à l'intérieur qu'à l'extérieur du pays)</li>
+              <li>évangéliser nos jeunes et nos enfants en leur permettant de participer gratuitement ou à moindre coût à nos campagnes d'évangélisation</li>
+              <li>former les jeunes, les femmes et les hommes pour en faire des leaders chrétiens, des personnes qui ont le cœur tourné vers DIEU</li>
+              <li>subvenir aux besoins primaires du Ministère (achat/location de matériels lors des missions externes)</li>
+              <li>financer des voyages missionnaires, ...</li>
+            </ul>
+
+            <div class="highlight">
+              <p><strong>⛔ Pour soutenir le Ministère d'Adoration Geneviève Brou</strong>, vous pouvez effectuer un transfert Mobile Money ou WAVE en choisissant l'un des modes de transferts suivants :</p>
+              <div class="coords">
+                <p>👉 <strong>Orange Money</strong> : +225 07 78 69 86 16 / 07 58 58 40 63<br/>
+                👉 <strong>Moov Money</strong> : +225 01 03 21 20 54<br/>
+                👉 <strong>MTN Money</strong> : +225 05 65 43 93 62</p>
+                <p style="margin-top:8px;">Vous faites ensuite la <strong>capture du reçu</strong> ou du message de transfert pour l'envoyer par WhatsApp sur le même numéro de transfert.</p>
+              </div>
+            </div>
+
+            <p>Que le Seigneur vous bénisse abondamment pour tout votre don.</p>
+
+            <p><strong>Geneviève BROU</strong><br/>
+            <em>Par le chant et dans l'ESPRIT SAINT, tourner les cœurs vers Dieu.</em></p>
           </div>
           <div class="footer">
             <p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p>

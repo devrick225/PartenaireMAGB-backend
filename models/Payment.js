@@ -38,15 +38,33 @@ const paymentSchema = new mongoose.Schema({
   paymentMethod: {
     type: String,
     enum: [
-      'card',              // Carte bancaire
-      'mobile_money',      // Mobile Money
-      'bank_transfer',     // Virement bancaire
-      'cash',             // Espèces
-      'paypal',           // PayPal
-      'apple_pay',        // Apple Pay
-      'google_pay',       // Google Pay
-      'crypto',            // Cryptomonnaie
-      'moneyfusion'
+      'card',                    // Carte bancaire
+      'mobile_money',            // Mobile Money générique
+      'bank_transfer',           // Virement bancaire
+      'cash',                   // Espèces
+      'paypal',                 // PayPal
+      'apple_pay',              // Apple Pay
+      'google_pay',             // Google Pay
+      'crypto',                 // Cryptomonnaie
+      'moneyfusion',            // MoneyFusion
+      // PayDunya - Opérateurs Mobile Money spécifiques
+      'orange-money-senegal',   // Orange Money Sénégal
+      'wave-senegal',           // Wave Sénégal
+      'free-money-senegal',     // Free Money Sénégal
+      'expresso-sn',            // Expresso Sénégal
+      'wizall-senegal',         // Wizall Sénégal
+      'mtn-benin',              // MTN Bénin
+      'moov-benin',             // Moov Bénin
+      'orange-money-ci',        // Orange Money Côte d'Ivoire
+      'wave-ci',                // Wave Côte d'Ivoire
+      'mtn-ci',                 // MTN Côte d'Ivoire
+      'moov-ci',                // Moov Côte d'Ivoire
+      't-money-togo',           // T-Money Togo
+      'moov-togo',              // Moov Togo
+      'orange-money-mali',      // Orange Money Mali
+      'moov-ml',                // Moov Mali
+      'orange-money-burkina',   // Orange Money Burkina Faso
+      'moov-burkina-faso'       // Moov Burkina Faso
     ],
     required: [true, 'La méthode de paiement est requise']
   },
@@ -60,6 +78,7 @@ const paymentSchema = new mongoose.Schema({
       'paypal',            // PayPal
       'fusionpay',         // FusionPay
       'moneyfusion',       // MoneyFusion (moneyfusion.net)
+      'paydunya',          // PayDunya (paydunya.com)
       'orange_money',      // Orange Money
       'mtn_mobile_money',  // MTN Mobile Money
       'moov_money',        // Moov Money
@@ -159,6 +178,57 @@ const paymentSchema = new mongoose.Schema({
     planId: String,               // Plan ID
     facilitatorAccessToken: String, // Token d'accès
     debugId: String,              // Debug ID
+    metadata: mongoose.Schema.Types.Mixed
+  },
+  
+  // Informations spécifiques à PayDunya
+  paydunya: {
+    token: String,                // Token PayDunya de la facture
+    transactionId: String,        // ID de transaction généré par nous
+    paymentUrl: String,           // URL de paiement PayDunya
+    invoiceUrl: String,           // URL de la facture PayDunya
+    status: {
+      type: String,
+      enum: ['pending', 'completed', 'failed', 'cancelled', 'expired'],
+      default: 'pending'
+    },
+    responseCode: String,         // Code de réponse PayDunya (00 = succès)
+    responseText: String,         // Texte de réponse PayDunya
+    paymentMethod: String,        // Opérateur utilisé (orange-money-ci, wave-senegal, etc.)
+    customerInfo: {
+      name: String,
+      email: String,
+      phone: String
+    },
+    fees: {
+      percentageFee: Number,
+      fixedFee: Number,
+      totalFee: Number,
+      netAmount: Number
+    },
+    expiresAt: Date,              // Date d'expiration de la facture
+    completedAt: Date,            // Date de completion du paiement
+    failedAt: Date,               // Date d'échec du paiement
+    
+    // Données de la facture PayDunya
+    invoice: {
+      totalAmount: Number,
+      description: String,
+      currency: String
+    },
+    
+    // Données personnalisées envoyées à PayDunya
+    customData: {
+      donationId: String,
+      customerId: String,
+      platform: String,
+      transactionId: String
+    },
+    
+    // Réponse API complète de PayDunya
+    rawResponse: mongoose.Schema.Types.Mixed,
+    
+    // Métadonnées additionnelles
     metadata: mongoose.Schema.Types.Mixed
   },
   
@@ -514,6 +584,12 @@ paymentSchema.methods.calculateFees = function() {
       const moneyFusionService = require('../services/moneyFusionService');
       const mfFees = moneyFusionService.calculateFees(this.amount, this.currency);
       processingFee = mfFees.totalFee;
+      break;
+    case 'paydunya':
+      // Calculer les frais PayDunya selon la méthode de paiement
+      const paydunyaService = require('../services/paydunyaService');
+      const pdFees = paydunyaService.calculateFees(this.amount, this.currency, this.paymentMethod);
+      processingFee = pdFees.totalFee;
       break;
     case 'orange_money':
     case 'mtn_mobile_money':

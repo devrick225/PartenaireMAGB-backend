@@ -6,7 +6,7 @@ require('dotenv').config();
 const updatePartnerLevels = async () => {
   try {
     console.log('🔄 Connexion à la base de données...');
-    await mongoose.connect(process.env.MONGODB_URI);
+    await mongoose.connect("mongodb+srv://erickoffi29:6IFIAtSRHAKrN7mt@cluster0.xc89w77.mongodb.net/magb");
     console.log('✅ Connecté à MongoDB');
 
     console.log('🔄 Récupération de tous les utilisateurs...');

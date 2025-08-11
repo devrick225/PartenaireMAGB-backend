@@ -123,7 +123,7 @@ const createDonation = async (req, res) => {
 
     const donation = await Donation.create(donationData);
 
-    // Envoyer l'email de confirmation
+    /* Envoyer l'email de confirmation
     try {
       await emailService.sendDonationConfirmationEmail(
         req.user.email,
@@ -139,7 +139,7 @@ const createDonation = async (req, res) => {
       );
     } catch (emailError) {
       console.error('Erreur envoi email confirmation don:', emailError);
-    }
+    }*/
 
     res.status(201).json({
       success: true,
@@ -224,8 +224,12 @@ const cancelRecurringDonation = async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
+    const userId = req.user.id;
+
+    console.log('🔄 cancelRecurringDonation - Don ID:', id, 'User ID:', userId, 'Reason:', reason);
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.error('❌ ID de don invalide:', id);
       return res.status(400).json({
         success: false,
         error: 'ID de don invalide'
@@ -235,14 +239,25 @@ const cancelRecurringDonation = async (req, res) => {
     const donation = await Donation.findById(id);
 
     if (!donation) {
+      console.error('❌ Don non trouvé:', id);
       return res.status(404).json({
         success: false,
         error: 'Don non trouvé'
       });
     }
 
+    console.log('✅ Don trouvé:', {
+      id: donation._id,
+      type: donation.type,
+      user: donation.user,
+      isActive: donation.recurring?.isActive,
+      amount: donation.amount,
+      category: donation.category
+    });
+
     // Vérifier les permissions
-    if (donation.user.toString() !== req.user.id && !['admin', 'moderator'].includes(req.user.role)) {
+    if (donation.user.toString() !== userId && !['admin', 'moderator'].includes(req.user.role)) {
+      console.error('❌ Accès non autorisé - User:', userId, 'Don owner:', donation.user);
       return res.status(403).json({
         success: false,
         error: 'Accès non autorisé à ce don'
@@ -251,6 +266,7 @@ const cancelRecurringDonation = async (req, res) => {
 
     // Vérifier que c'est un don récurrent
     if (donation.type !== 'recurring') {
+      console.error('❌ Type de don incorrect:', donation.type);
       return res.status(400).json({
         success: false,
         error: 'Seuls les dons récurrents peuvent être annulés'
@@ -258,25 +274,40 @@ const cancelRecurringDonation = async (req, res) => {
     }
 
     // Vérifier que le don est actif
-    if (!donation.recurring.isActive) {
+    if (!donation.recurring?.isActive) {
+      console.error('❌ Don récurrent déjà inactif');
       return res.status(400).json({
         success: false,
         error: 'Ce don récurrent est déjà inactif'
       });
     }
 
+    console.log('✅ Vérifications passées, annulation du don récurrent...');
+
     // Annuler le don récurrent
-    await donation.stopRecurring(reason || 'Annulé par l\'utilisateur');
+    try {
+      await donation.stopRecurring(reason || 'Annulé par l\'utilisateur');
+      console.log('✅ Don récurrent annulé avec succès');
+    } catch (stopError) {
+      console.error('❌ Erreur lors de l\'arrêt du don récurrent:', stopError);
+      throw new Error(`Erreur lors de l'arrêt du don récurrent: ${stopError.message}`);
+    }
 
     res.json({
       success: true,
-      message: 'Don récurrent annulé avec succès'
+      message: 'Don récurrent annulé avec succès',
+      data: {
+        donationId: donation._id,
+        cancelledAt: new Date(),
+        reason: reason || 'Annulé par l\'utilisateur'
+      }
     });
   } catch (error) {
-    console.error('Erreur cancelRecurringDonation:', error);
+    console.error('❌ Erreur cancelRecurringDonation:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur lors de l\'annulation du don'
+      error: 'Erreur lors de l\'annulation du don',
+      details: error.message
     });
   }
 };

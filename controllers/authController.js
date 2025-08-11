@@ -108,6 +108,8 @@ const register = async (req, res) => {
     // Envoyer l'email de bienvenue (optionnel)
     try {
       await emailService.sendWelcomeEmail(user.email, user.firstName);
+      // Email partenaire personnalisé
+      await emailService.sendPartnerWelcomeEmail(user.email, user.firstName, user.partnerId);
     } catch (emailError) {
       console.error('Erreur envoi email de bienvenue:', emailError);
     }
@@ -130,7 +132,8 @@ const register = async (req, res) => {
           country: user.country,
           city: user.city,
           language: user.language,
-          currency: user.currency
+          currency: user.currency,
+          partnerId: user.partnerId
         },
         token,
         refreshToken
@@ -239,7 +242,8 @@ const login = async (req, res) => {
           isEmailVerified: user.isEmailVerified,
           isPhoneVerified: user.isPhoneVerified,
           profileComplete: profile?.isComplete || false,
-          profileCompletionPercentage: profile?.profileCompletionPercentage || 0
+          profileCompletionPercentage: profile?.profileCompletionPercentage || 0,
+          partnerId: user.partnerId
         },
         token,
         refreshToken
@@ -584,9 +588,39 @@ const changePassword = async (req, res) => {
     user.password = newPassword;
     await user.save();
 
+    // Générer un nouveau token JWT pour maintenir la session
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRE || '7d' }
+    );
+
+    // Générer un nouveau refresh token
+    const refreshToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_REFRESH_SECRET,
+      { expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d' }
+    );
+
     res.json({
       success: true,
-      message: 'Mot de passe modifié avec succès'
+      message: 'Mot de passe modifié avec succès',
+      data: {
+        token,
+        refreshToken,
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          role: user.role,
+          isEmailVerified: user.isEmailVerified,
+          isPhoneVerified: user.isPhoneVerified,
+          partnerId: user.partnerId,
+          partnerLevel: user.partnerLevel,
+          partnerLevelDetails: user.partnerLevelDetails
+        }
+      }
     });
   } catch (error) {
     console.error('Erreur change password:', error);
@@ -629,7 +663,10 @@ const getMe = async (req, res) => {
           badges: user.badges,
           lastLogin: user.lastLogin,
           createdAt: user.createdAt,
-          profile: user.profile
+          profile: user.profile,
+          partnerId: user.partnerId,
+          partnerLevel: user.partnerLevel,
+          partnerLevelDetails: user.partnerLevelDetails
         }
       }
     });

@@ -87,7 +87,7 @@ Utilisez-le pour réinitialiser votre mot de passe.`;
     
     const message = `Bonjour ${firstName},
 
-Votre don de ${amount} ${currency} a été confirmé.
+Votre DON PARTENAIRE MAGB de ${amount} ${currency} a été confirmé.
 Reçu n°: ${receiptNumber}
 
 Merci pour votre soutien à PARTENAIRE MAGB !`;
@@ -104,11 +104,11 @@ Merci pour votre soutien à PARTENAIRE MAGB !`;
     let message = `Bonjour ${firstName},\n\n`;
     
     if (status === 'completed') {
-      message += `Votre paiement de ${amount} ${currency} a été confirmé avec succès.\n\nMerci !`;
+      message += `Votre DON PARTENAIRE MAGB de ${amount} ${currency} a été confirmé avec succès.\n\nMerci !`;
     } else if (status === 'failed') {
-      message += `Votre paiement de ${amount} ${currency} a échoué.\n\nVeuillez réessayer ou contacter le support.`;
+      message += `Votre DON PARTENAIRE MAGB de ${amount} ${currency} a échoué.\n\nVeuillez réessayer ou contacter le support.`;
     } else {
-      message += `Votre paiement de ${amount} ${currency} est en cours de traitement.\n\nVous serez notifié du résultat.`;
+      message += `Votre DON PARTENAIRE MAGB de ${amount} ${currency} est en cours de traitement.\n\nVous serez notifié du résultat.`;
     }
 
     return await this.sendSms(phoneNumber, message);

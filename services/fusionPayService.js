@@ -57,7 +57,7 @@ class FusionPayService {
     donationId,
     callbackUrl,
     paymentMethod = 'card',
-    description = 'Don PARTENAIRE MAGB'
+    description = 'DON PARTENAIRE MAGB'
   }) {
     try {
       const payload = {
@@ -66,7 +66,7 @@ class FusionPayService {
         payment_method: paymentMethod,
         description,
         customer: {
-          name: `${customerInfo.name} ${customerInfo.surname}`,
+          name: customerInfo.name, // Utiliser directement le nom complet
           email: customerInfo.email,
           phone: customerInfo.phone,
           address: customerInfo.address || '',

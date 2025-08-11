@@ -89,6 +89,16 @@ const userSchema = new mongoose.Schema({
     enum: ['fr', 'en'],
     default: 'fr'
   },
+  
+  // ID Partenaire unique
+  partnerId: {
+    type: String,
+    unique: true,
+    required: true,
+    uppercase: true,
+    length: 10,
+    index: true
+  },
   currency: {
     type: String,
     enum: ['XOF', 'EUR', 'USD'],
@@ -281,15 +291,64 @@ userSchema.virtual('partnerLevelDetails').get(function() {
   return levels[this.partnerLevel] || levels['classique'];
 });
 
-// Middleware pre-save pour hasher le mot de passe
-userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
+// Fonction utilitaire pour générer un ID de partenaire unique
+const generatePartnerId = async (userModel) => {
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let partnerId;
+  let isUnique = false;
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  while (!isUnique && attempts < maxAttempts) {
+    // Générer un ID de 10 caractères : 2 lettres + 8 chiffres/lettres
+    let id = '';
+    
+    // Les 2 premiers caractères sont des lettres (pour faciliter la lecture)
+    for (let i = 0; i < 2; i++) {
+      id += characters.charAt(Math.floor(Math.random() * 26)); // Lettres seulement (A-Z)
+    }
+    
+    // Les 8 caractères suivants sont alphanumériques
+    for (let i = 0; i < 8; i++) {
+      id += characters.charAt(Math.floor(Math.random() * characters.length));
+    }
+    
+    partnerId = id;
+    
+    // Vérifier l'unicité
+    const existingUser = await userModel.findOne({ partnerId });
+    if (!existingUser) {
+      isUnique = true;
+    }
+    
+    attempts++;
+  }
   
+  if (!isUnique) {
+    throw new Error('Impossible de générer un ID partenaire unique après plusieurs tentatives');
+  }
+  
+  return partnerId;
+};
+
+// Middleware pre-save pour générer l'ID partenaire et hasher le mot de passe
+userSchema.pre('save', async function(next) {
   try {
-    const salt = await bcrypt.genSalt(12);
-    this.password = await bcrypt.hash(this.password, salt);
+    // Générer l'ID partenaire pour les nouveaux utilisateurs
+    if (this.isNew && !this.partnerId) {
+      this.partnerId = await generatePartnerId(this.constructor);
+      console.log(`✅ ID Partenaire généré: ${this.partnerId} pour ${this.email}`);
+    }
+    
+    // Hasher le mot de passe si modifié
+    if (this.isModified('password')) {
+      const salt = await bcrypt.genSalt(12);
+      this.password = await bcrypt.hash(this.password, salt);
+    }
+    
     next();
   } catch (error) {
+    console.error('❌ Erreur dans pre-save hook:', error);
     next(error);
   }
 });

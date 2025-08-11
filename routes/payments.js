@@ -22,10 +22,30 @@ const initializePaymentValidation = [
     .isMongoId()
     .withMessage('ID de donation invalide'),
   body('provider')
-    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya'])
     .withMessage('Fournisseur de paiement invalide'),
   body('paymentMethod')
-    .isIn(['card', 'mobile_money', 'bank_transfer', 'paypal', 'crypto', 'moneyfusion'])
+    .custom((value, { req }) => {
+      // Pour PayDunya, accepter tous les opérateurs supportés
+      if (req.body.provider === 'paydunya') {
+        const paydunyaOperators = [
+          'card', 'orange-money-senegal', 'wave-senegal', 'free-money-senegal', 'expresso-sn', 'wizall-senegal',
+          'mtn-benin', 'moov-benin', 'orange-money-ci', 'wave-ci', 'mtn-ci', 'moov-ci',
+          't-money-togo', 'moov-togo', 'orange-money-mali', 'moov-ml', 'orange-money-burkina', 'moov-burkina-faso'
+        ];
+        if (!paydunyaOperators.includes(value)) {
+          throw new Error(`Opérateur PayDunya non supporté: ${value}`);
+        }
+        return true;
+      }
+      
+      // Pour les autres fournisseurs, utiliser la validation standard
+      const standardMethods = ['card', 'mobile_money', 'bank_transfer', 'paypal', 'crypto', 'moneyfusion'];
+      if (!standardMethods.includes(value)) {
+        throw new Error('Méthode de paiement invalide');
+      }
+      return true;
+    })
     .withMessage('Méthode de paiement invalide'),
   body('customerPhone')
     .optional()
@@ -66,7 +86,7 @@ const getPaymentsValidation = [
     .withMessage('Statut invalide'),
   query('provider')
     .optional()
-    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya'])
     .withMessage('Fournisseur invalide')
 ];
 
@@ -78,7 +98,7 @@ const getPaymentStatsValidation = [
     .withMessage('Période invalide. Valeurs acceptées: week, month, year'),
   query('provider')
     .optional()
-    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya'])
     .withMessage('Fournisseur invalide')
 ];
 

@@ -4,6 +4,55 @@ const Ticket = require('../models/Ticket');
 const User = require('../models/User');
 const emailService = require('../services/emailService');
 
+// Helper: mappe une raison libre (FR/EN) vers une valeur enum autorisée
+function mapCloseReasonToEnum(inputReason) {
+  if (!inputReason || typeof inputReason !== 'string') return undefined;
+  const normalized = inputReason
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // enlever accents
+    .replace(/[’'`"\\]/g, '') // enlever apostrophes/quotes
+    .replace(/\s+/g, ' ') // espaces
+    .trim();
+
+  // Résolu
+  if ([
+    'resolved', 'resolu', 'resolution', 'probleme resolu', 'issue resolue', 'clos resolu', 'solutionne', 'solutionnee'
+  ].includes(normalized)) {
+    return 'resolved';
+  }
+
+  // Doublon
+  if ([
+    'duplicate', 'duplique', 'doublon', 'ticket en double', 'duplicata'
+  ].includes(normalized)) {
+    return 'duplicate';
+  }
+
+  // Spam
+  if ([ 'spam' ].includes(normalized)) {
+    return 'spam';
+  }
+
+  // Hors sujet / non pertinent
+  if ([
+    'irrelevant', 'hors sujet', 'non pertinent', 'pas pertinent', 'inutile'
+  ].includes(normalized)) {
+    return 'irrelevant';
+  }
+
+  // A la demande de l'utilisateur
+  if ([
+    'user_request', 'ferme par l utilisateur', 'ferme par utilisateur', 'fermeture par utilisateur',
+    'ferme par le client', 'par l utilisateur', 'demande utilisateur', 'fermeture demandee',
+    'closed by user', 'close by user', 'user requested', 'client request'
+  ].includes(normalized)) {
+    return 'user_request';
+  }
+
+  // Par défaut, considérer comme demande utilisateur
+  return 'user_request';
+}
+
 // @desc    Obtenir la liste des tickets
 // @route   GET /api/tickets
 // @access  Private
@@ -444,7 +493,8 @@ const changeTicketStatus = async (req, res) => {
     }
 
     // Changer le statut
-    await ticket.changeStatus(status, req.user.id, reason);
+    const mappedReason = status === 'closed' ? mapCloseReasonToEnum(reason) : reason;
+    await ticket.changeStatus(status, req.user.id, mappedReason);
 
     // Envoyer notification selon le nouveau statut
     try {
@@ -529,14 +579,15 @@ const closeTicket = async (req, res) => {
     ticket.status = 'closed';
     ticket.closedAt = new Date();
     ticket.closedBy = req.user.id;
-    ticket.closeReason = reason || 'resolved';
+    ticket.closeReason = mapCloseReasonToEnum(reason) || 'user_request';
     if (resolution) ticket.resolution = resolution;
 
     // Calculer le temps de résolution
     ticket.calculateResolutionTime();
     
     // Ajouter à l'historique
-    ticket.addToHistory('closed', `Ticket fermé: ${reason}`, req.user.id, { reason, resolution });
+    const mappedReason = reason ? mapCloseReasonToEnum(reason) : 'user_request';
+    ticket.addToHistory('closed', `Ticket fermé: ${reason}`, req.user.id, { reason, resolution, mappedReason });
     
     await ticket.save();
 
@@ -850,7 +901,7 @@ const getTicketStats = async (req, res) => {
 const addTicketComment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { comment, isInternal = false } = req.body;
+    const { content, comment, isInternal = false } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -888,30 +939,47 @@ const addTicketComment = async (req, res) => {
       });
     }
 
+    // Supporter content ou comment
+    const text = (typeof comment === 'string' && comment) || (typeof content === 'string' && content) || '';
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return res.status(400).json({
+        success: false,
+        error: 'Le contenu du commentaire est requis'
+      });
+    }
+
     // Créer le commentaire
     const newComment = {
-      content: comment,
+      content: trimmed,
       author: req.user.id,
       isInternal,
       createdAt: new Date()
     };
 
-    // Ajouter le commentaire au ticket (on peut créer un modèle Comment séparé)
+    // Ajouter le commentaire au ticket
     if (!ticket.comments) ticket.comments = [];
     ticket.comments.push(newComment);
 
     // Mettre à jour les métriques
     if (!isOwner) {
-      // C'est une réponse du support
-      ticket.calculateFirstResponseTime();
+      if (typeof ticket.calculateFirstResponseTime === 'function') {
+        ticket.calculateFirstResponseTime();
+      }
+      ticket.metrics = ticket.metrics || {};
+      if (typeof ticket.metrics.responseCount !== 'number') {
+        ticket.metrics.responseCount = 0;
+      }
       ticket.metrics.responseCount += 1;
     }
 
     // Ajouter à l'historique
-    ticket.addToHistory('comment_added', 
-      isInternal ? 'Commentaire interne ajouté' : 'Commentaire ajouté', 
-      req.user.id, 
-      { comment: comment.substring(0, 100) + '...', isInternal }
+    const preview = trimmed.length > 100 ? trimmed.substring(0, 100) + '...' : trimmed;
+    ticket.addToHistory(
+      'comment_added',
+      isInternal ? 'Commentaire interne ajouté' : 'Commentaire ajouté',
+      req.user.id,
+      { comment: preview, isInternal }
     );
 
     await ticket.save();
@@ -927,7 +995,7 @@ const addTicketComment = async (req, res) => {
             {
               ticketNumber: ticket.ticketNumber,
               subject: ticket.subject,
-              comment: comment,
+              comment: trimmed,
               respondedBy: `${req.user.firstName} ${req.user.lastName}`
             },
             'comment_added'

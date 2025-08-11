@@ -5,6 +5,7 @@ const Donation = require('../models/Donation');
 const User = require('../models/User');
 const fusionPayService = require('../services/fusionPayService');
 const moneyFusionService = require('../services/moneyFusionService');
+const paydunyaService = require('../services/paydunyaService');
 const emailService = require('../services/emailService');
 const websocketService = require('../services/websocketService');
 
@@ -984,5 +985,169 @@ if (process.env.NODE_ENV === 'development') {
     });
   });
 }
+
+// @desc    Webhook PayDunya
+// @route   POST /api/webhooks/paydunya
+// @access  Public (webhook de PayDunya)
+router.post('/paydunya', express.json(), async (req, res) => {
+  try {
+    const webhookData = req.body;
+    
+    console.log('🔔 PayDunya webhook reçu:', webhookData);
+
+    // Traiter le webhook PayDunya
+    const webhookResult = await paydunyaService.processWebhook(webhookData);
+
+    if (!webhookResult.success) {
+      console.error('❌ Erreur lors du traitement du webhook PayDunya:', webhookResult.error);
+      return res.status(400).json({
+        success: false,
+        error: webhookResult.error
+      });
+    }
+
+    // Trouver le paiement correspondant via le token PayDunya
+    const payment = await Payment.findOne({
+      'paydunya.token': webhookData.token,
+      provider: 'paydunya'
+    }).populate('user donation');
+
+    if (!payment) {
+      console.error('❌ Paiement non trouvé pour webhook PayDunya. Token:', webhookData.token);
+      return res.status(404).json({
+        success: false,
+        error: 'Paiement non trouvé'
+      });
+    }
+
+    // Ajouter le webhook à l'historique
+    payment.addWebhook('paydunya', 'payment_status_update', webhookData.token, webhookData);
+
+    // Traiter selon le statut du paiement
+    if (webhookResult.status === 'completed') {
+      console.log('✅ PayDunya: Paiement confirmé pour token:', webhookData.token);
+
+      // Mettre à jour le paiement
+      payment.status = 'completed';
+      payment.paydunya.status = 'completed';
+      payment.paydunya.responseCode = webhookData.response_code;
+      payment.paydunya.responseText = webhookData.response_text || 'Paiement PayDunya confirmé';
+      payment.paydunya.completedAt = new Date();
+      
+      // Ajouter à l'historique
+      payment.addToHistory('completed', 'Paiement PayDunya confirmé via webhook', webhookData.token, {
+        provider: 'paydunya',
+        paymentMethod: payment.paydunya.paymentMethod,
+        amount: payment.amount,
+        currency: payment.currency,
+        responseCode: webhookData.response_code
+      });
+
+      // Marquer la donation comme complétée si nécessaire
+      if (payment.donation && payment.donation.status !== 'completed') {
+        payment.donation.status = 'completed';
+        payment.donation.completedAt = new Date();
+        await payment.donation.save();
+        
+        console.log('✅ PayDunya: Donation marquée comme complétée:', payment.donation._id);
+      }
+
+      // Envoyer email de confirmation
+      try {
+        if (payment.user && payment.user.email && payment.donation) {
+          await emailService.sendDonationConfirmation(
+            payment.user.email,
+            {
+              donorName: payment.user.name,
+              amount: payment.amount,
+              currency: payment.currency,
+              donationTitle: payment.donation.title,
+              transactionId: payment.paydunya.transactionId,
+              paymentMethod: 'PayDunya - ' + payment.paydunya.paymentMethod
+            }
+          );
+          console.log('📧 PayDunya: Email de confirmation envoyé à:', payment.user.email);
+        }
+      } catch (emailError) {
+        console.error('❌ PayDunya: Erreur envoi email:', emailError);
+        // Ne pas faire échouer le webhook à cause de l'email
+      }
+
+      // Notification WebSocket si disponible
+      try {
+        if (websocketService && payment.user) {
+          await websocketService.sendPaymentUpdate(payment.user._id, {
+            paymentId: payment._id,
+            status: 'completed',
+            provider: 'paydunya',
+            amount: payment.amount,
+            currency: payment.currency
+          });
+          console.log('📡 PayDunya: Notification WebSocket envoyée pour:', payment.user._id);
+        }
+      } catch (wsError) {
+        console.error('❌ PayDunya: Erreur WebSocket:', wsError);
+        // Ne pas faire échouer le webhook à cause de WebSocket
+      }
+
+    } else if (webhookResult.status === 'failed') {
+      console.log('❌ PayDunya: Paiement échoué pour token:', webhookData.token);
+
+      // Mettre à jour le paiement
+      payment.status = 'failed';
+      payment.paydunya.status = 'failed';
+      payment.paydunya.responseCode = webhookData.response_code;
+      payment.paydunya.responseText = webhookData.response_text || 'Paiement PayDunya échoué';
+      payment.paydunya.failedAt = new Date();
+      
+      // Ajouter à l'historique
+      payment.addToHistory('failed', 'Paiement PayDunya échoué via webhook', webhookData.token, {
+        provider: 'paydunya',
+        paymentMethod: payment.paydunya.paymentMethod,
+        responseCode: webhookData.response_code,
+        responseText: webhookData.response_text
+      });
+
+      // Marquer la donation comme échouée si nécessaire
+      if (payment.donation && payment.donation.status !== 'failed') {
+        payment.donation.status = 'pending'; // Garder en pending pour permettre un autre essai
+        await payment.donation.save();
+      }
+
+    } else {
+      console.log('ℹ️ PayDunya: Statut intermédiaire pour token:', webhookData.token, 'Statut:', webhookResult.status);
+      
+      // Mettre à jour uniquement le statut PayDunya interne
+      payment.paydunya.responseCode = webhookData.response_code;
+      payment.paydunya.responseText = webhookData.response_text;
+      
+      // Ajouter à l'historique sans changer le statut principal
+      payment.addToHistory('info', `Webhook PayDunya: ${webhookResult.status}`, webhookData.token, {
+        provider: 'paydunya',
+        responseCode: webhookData.response_code,
+        responseText: webhookData.response_text
+      });
+    }
+
+    // Sauvegarder le paiement
+    await payment.save();
+
+    console.log('✅ PayDunya: Webhook traité avec succès pour paiement:', payment._id);
+
+    res.status(200).json({
+      success: true,
+      message: 'Webhook PayDunya traité avec succès',
+      paymentId: payment._id,
+      status: payment.status
+    });
+
+  } catch (error) {
+    console.error('❌ PayDunya: Erreur lors du traitement du webhook:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du traitement du webhook PayDunya'
+    });
+  }
+});
 
 module.exports = router; 
