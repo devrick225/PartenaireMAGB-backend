@@ -99,14 +99,19 @@ const getProfile = async (req, res) => {
 // @access  Private
 const updateProfile = async (req, res) => {
   try {
+    console.log('🔍 Request body for updateProfile:', JSON.stringify(req.body, null, 2));
+    
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', JSON.stringify(errors.array(), null, 2));
       return res.status(400).json({
         success: false,
         error: 'Données invalides',
         details: errors.array()
       });
     }
+    
+    console.log('✅ Validation passed, proceeding with update');
 
     const updates = req.body;
     const user = await User.findById(req.user.id).populate('profile');

@@ -13,7 +13,17 @@
     "deploy": "vercel --prod",
     "deploy:dev": "vercel",
     "vercel-build": "echo 'Build completed'",
-    "postinstall": "echo 'Dependencies installed successfully'"
+    "postinstall": "echo 'Dependencies installed successfully'",
+    "seed": "node scripts/seed.js",
+    "seed:dev": "NODE_ENV=development node scripts/seed.js",
+    "seed:prod": "NODE_ENV=production node scripts/seed.js",
+    "db:clean": "node scripts/cleanDatabase.js",
+    "db:backup": "node scripts/backupDatabase.js",
+    "db:test": "node scripts/testConnection.js",
+    "db:test:full": "node scripts/testConnection.js --crud",
+    "setup": "npm install && npm run seed:dev",
+    "reset": "npm run db:clean && npm run seed:dev",
+    "check": "npm run db:test"
   },
   "keywords": [
     "donations",

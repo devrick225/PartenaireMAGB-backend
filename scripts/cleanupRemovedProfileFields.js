@@ -6,7 +6,7 @@ async function cleanupRemovedProfileFields() {
     console.log('🧹 Début du nettoyage des champs supprimés du profil...');
 
     // Connexion à la base de données
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/partenaire-magb');
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://erickoffi29:6IFIAtSRHAKrN7mt@cluster0.xc89w77.mongodb.net/magb');
     console.log('✅ Connecté à MongoDB');
 
     // Obtenir la collection profiles directement

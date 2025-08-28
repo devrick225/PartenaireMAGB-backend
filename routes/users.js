@@ -27,6 +27,27 @@ const avatarUpload = cloudinaryService.getAvatarUploader();
 
 // Validation pour la mise à jour du profil
 const updateProfileValidation = [
+  // Informations de base utilisateur
+  body('firstName')
+    .optional()
+    .trim()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Prénom invalide'),
+  body('lastName')
+    .optional()
+    .trim()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Nom de famille invalide'),
+  body('email')
+    .optional()
+    .isEmail()
+    .withMessage('Email invalide'),
+  body('phone')
+    .optional()
+    .matches(/^\+?[1-9]\d{1,14}$/)
+    .withMessage('Numéro de téléphone invalide'),
+  
+  // Profil personnel
   body('dateOfBirth')
     .optional()
     .isISO8601()
@@ -44,20 +65,127 @@ const updateProfileValidation = [
     .trim()
     .isLength({ min: 2, max: 100 })
     .withMessage('Profession invalide'),
+  
+  // Adresse
   body('address.street')
     .optional()
     .trim()
-    .isLength({ min: 5, max: 200 })
-    .withMessage('Adresse invalide'),
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length >= 1 && value.length <= 200;
+    })
+    .withMessage('Rue invalide'),
+  body('address.neighborhood')
+    .optional()
+    .trim()
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length >= 1 && value.length <= 100;
+    })
+    .withMessage('Quartier invalide'),
+  body('address.postalCode')
+    .optional()
+    .trim()
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length >= 1 && value.length <= 20;
+    })
+    .withMessage('Code postal invalide'),
+  body('address.state')
+    .optional()
+    .trim()
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length >= 1 && value.length <= 100;
+    })
+    .withMessage('État/Région invalide'),
+  body('address.country')
+    .optional()
+    .trim()
+    .isLength({ min: 2, max: 3 })
+    .withMessage('Code pays invalide'),
+  
+  // Contact d'urgence
   body('emergencyContact.name')
     .optional()
     .trim()
-    .isLength({ min: 2, max: 100 })
+    .isLength({ min: 0, max: 100 })
     .withMessage('Nom du contact d\'urgence invalide'),
+  body('emergencyContact.relationship')
+    .optional()
+    .trim()
+    .isLength({ min: 0, max: 50 })
+    .withMessage('Relation du contact d\'urgence invalide'),
   body('emergencyContact.phone')
     .optional()
-    .matches(/^\+?[1-9]\d{1,14}$/)
-    .withMessage('Téléphone du contact d\'urgence invalide')
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return /^\+?[1-9]\d{1,14}$/.test(value);
+    })
+    .withMessage('Téléphone du contact d\'urgence invalide'),
+  body('emergencyContact.email')
+    .optional()
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    })
+    .withMessage('Email du contact d\'urgence invalide'),
+  
+  // Église
+  body('churchMembership.isChurchMember')
+    .optional()
+    .isBoolean()
+    .withMessage('Statut membre d\'église invalide'),
+  body('churchMembership.churchName')
+    .optional()
+    .trim()
+    .isLength({ min: 0, max: 100 })
+    .withMessage('Nom d\'église invalide'),
+  body('churchMembership.membershipDuration')
+    .optional()
+    .isInt({ min: 0 })
+    .withMessage('Durée de membre invalide'),
+  body('churchMembership.role')
+    .optional()
+    .trim()
+    .isLength({ min: 0, max: 50 })
+    .withMessage('Rôle dans l\'église invalide'),
+  
+  // Préférences de don
+  body('donationPreferences.preferredAmount')
+    .optional()
+    .isInt({ min: 100 })
+    .withMessage('Montant préféré invalide'),
+  body('donationPreferences.preferredFrequency')
+    .optional()
+    .isIn(['weekly', 'monthly', 'quarterly', 'yearly', 'one_time'])
+    .withMessage('Fréquence préférée invalide'),
+  body('donationPreferences.preferredDay')
+    .optional()
+    .isInt({ min: 1, max: 31 })
+    .withMessage('Jour préféré invalide'),
+  body('donationPreferences.preferredPaymentMethod')
+    .optional()
+    .isIn(['card', 'mobile_money', 'bank_transfer', 'cash'])
+    .withMessage('Méthode de paiement préférée invalide'),
+  body('donationPreferences.donationCategories')
+    .optional()
+    .isArray()
+    .withMessage('Catégories de don invalides'),
+  body('donationPreferences.donationCategories.*')
+    .optional()
+    .isIn(['don_libre', 'don_mensuel', 'don_special', 'dime', 'offrande', 'projet_special', 'soutien_missionnaire', 'aide_sociale', 'construction_temple', 'evangelisation', 'jeunesse', 'formation', 'media', 'charity'])
+    .withMessage('Catégorie de don invalide'),
+  
+  // Informations familiales
+  body('familyInfo.numberOfChildren')
+    .optional()
+    .isInt({ min: 0, max: 20 })
+    .withMessage('Nombre d\'enfants invalide'),
+  body('familyInfo.children')
+    .optional()
+    .isArray()
+    .withMessage('Informations enfants invalides')
 ];
 
 // Validation pour les paramètres de requête
