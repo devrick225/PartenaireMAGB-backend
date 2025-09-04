@@ -46,11 +46,14 @@ const updateProfileValidation = [
     .optional()
     .matches(/^\+?[1-9]\d{1,14}$/)
     .withMessage('Numéro de téléphone invalide'),
-  
+
   // Profil personnel
   body('dateOfBirth')
     .optional()
-    .isISO8601()
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return new Date(value).toString() !== 'Invalid Date';
+    })
     .withMessage('Date de naissance invalide'),
   body('gender')
     .optional()
@@ -63,9 +66,12 @@ const updateProfileValidation = [
   body('occupation')
     .optional()
     .trim()
-    .isLength({ min: 2, max: 100 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length >= 2 && value.length <= 100;
+    })
     .withMessage('Profession invalide'),
-  
+
   // Adresse
   body('address.street')
     .optional()
@@ -102,19 +108,28 @@ const updateProfileValidation = [
   body('address.country')
     .optional()
     .trim()
-    .isLength({ min: 2, max: 3 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length >= 2 && value.length <= 3;
+    })
     .withMessage('Code pays invalide'),
-  
+
   // Contact d'urgence
   body('emergencyContact.name')
     .optional()
     .trim()
-    .isLength({ min: 0, max: 100 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length <= 100;
+    })
     .withMessage('Nom du contact d\'urgence invalide'),
   body('emergencyContact.relationship')
     .optional()
     .trim()
-    .isLength({ min: 0, max: 50 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length <= 50;
+    })
     .withMessage('Relation du contact d\'urgence invalide'),
   body('emergencyContact.phone')
     .optional()
@@ -130,7 +145,7 @@ const updateProfileValidation = [
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
     })
     .withMessage('Email du contact d\'urgence invalide'),
-  
+
   // Église
   body('churchMembership.isChurchMember')
     .optional()
@@ -139,22 +154,34 @@ const updateProfileValidation = [
   body('churchMembership.churchName')
     .optional()
     .trim()
-    .isLength({ min: 0, max: 100 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length <= 100;
+    })
     .withMessage('Nom d\'église invalide'),
   body('churchMembership.membershipDuration')
     .optional()
-    .isInt({ min: 0 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return Number.isInteger(Number(value)) && Number(value) >= 0;
+    })
     .withMessage('Durée de membre invalide'),
   body('churchMembership.role')
     .optional()
     .trim()
-    .isLength({ min: 0, max: 50 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      return value.length <= 50;
+    })
     .withMessage('Rôle dans l\'église invalide'),
-  
+
   // Préférences de don
   body('donationPreferences.preferredAmount')
     .optional()
-    .isInt({ min: 100 })
+    .custom((value) => {
+      if (value === 0 || value === '' || value === null || value === undefined) return true;
+      return Number.isInteger(Number(value)) && Number(value) >= 100;
+    })
     .withMessage('Montant préféré invalide'),
   body('donationPreferences.preferredFrequency')
     .optional()
@@ -162,7 +189,11 @@ const updateProfileValidation = [
     .withMessage('Fréquence préférée invalide'),
   body('donationPreferences.preferredDay')
     .optional()
-    .isInt({ min: 1, max: 31 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      const num = Number(value);
+      return Number.isInteger(num) && num >= 1 && num <= 31;
+    })
     .withMessage('Jour préféré invalide'),
   body('donationPreferences.preferredPaymentMethod')
     .optional()
@@ -176,11 +207,15 @@ const updateProfileValidation = [
     .optional()
     .isIn(['don_libre', 'don_mensuel', 'don_special', 'dime', 'offrande', 'projet_special', 'soutien_missionnaire', 'aide_sociale', 'construction_temple', 'evangelisation', 'jeunesse', 'formation', 'media', 'charity'])
     .withMessage('Catégorie de don invalide'),
-  
+
   // Informations familiales
   body('familyInfo.numberOfChildren')
     .optional()
-    .isInt({ min: 0, max: 20 })
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) return true;
+      const num = Number(value);
+      return Number.isInteger(num) && num >= 0 && num <= 20;
+    })
     .withMessage('Nombre d\'enfants invalide'),
   body('familyInfo.children')
     .optional()
