@@ -94,10 +94,16 @@ const userSchema = new mongoose.Schema({
   partnerId: {
     type: String,
     unique: true,
-    required: true,
     uppercase: true,
     length: 10,
-    index: true
+    index: true,
+    validate: {
+      validator: function(v) {
+        // Permettre undefined pendant la création (sera généré par le middleware)
+        return this.isNew ? true : (v && v.length === 10);
+      },
+      message: 'L\'ID partenaire doit contenir exactement 10 caractères'
+    }
   },
   currency: {
     type: String,
@@ -334,8 +340,8 @@ const generatePartnerId = async (userModel) => {
 // Middleware pre-save pour générer l'ID partenaire et hasher le mot de passe
 userSchema.pre('save', async function(next) {
   try {
-    // Générer l'ID partenaire pour les nouveaux utilisateurs
-    if (this.isNew && !this.partnerId) {
+    // Générer l'ID partenaire pour les nouveaux utilisateurs ou si manquant
+    if (!this.partnerId) {
       this.partnerId = await generatePartnerId(this.constructor);
       console.log(`✅ ID Partenaire généré: ${this.partnerId} pour ${this.email}`);
     }
