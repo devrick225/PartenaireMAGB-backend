@@ -6,9 +6,9 @@ class CloudinaryService {
   constructor() {
     // Configuration Cloudinary
     cloudinary.config({
-      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-      api_key: process.env.CLOUDINARY_API_KEY,
-      api_secret: process.env.CLOUDINARY_API_SECRET
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dhtdo41o2' ,
+      api_key: process.env.CLOUDINARY_API_KEY || '356816498247719',
+      api_secret: process.env.CLOUDINARY_API_SECRET || 'Ql2t_hvQugWgqpiSX1KCyU8n7FM'
     });
 
     this.isConfigured = !!(
@@ -19,6 +19,8 @@ class CloudinaryService {
 
     if (!this.isConfigured) {
       console.warn('⚠️ Cloudinary not configured - Image uploads will fail');
+    } else {
+      console.log('✅ Cloudinary service initialized successfully');
     }
   }
 

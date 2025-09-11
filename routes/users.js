@@ -56,11 +56,11 @@ const updateProfileValidation = [
     })
     .withMessage('Date de naissance invalide'),
   body('gender')
-    .optional()
+    .optional({ checkFalsy: true })
     .isIn(['male', 'female', 'other'])
     .withMessage('Genre invalide'),
   body('maritalStatus')
-    .optional()
+    .optional({ checkFalsy: true })
     .isIn(['single', 'married', 'divorced', 'widowed'])
     .withMessage('Statut matrimonial invalide'),
   body('occupation')
