@@ -6,9 +6,9 @@ class CloudinaryService {
   constructor() {
     // Configuration Cloudinary
     cloudinary.config({
-      cloud_name: 'dhtdo41o2' ,
-      api_key: '356816498247719',
-      api_secret: 'Ql2t_hvQugWgqpiSX1KCyU8n7FM'
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME ,
+      api_key: process.env.CLOUDINARY_API_KEY ,
+      api_secret: process.env.CLOUDINARY_API_SECRET
     });
 
     this.isConfigured = !!(

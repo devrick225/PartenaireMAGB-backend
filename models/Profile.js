@@ -9,7 +9,7 @@ const profileSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
-  
+
   // Informations personnelles détaillées
   dateOfBirth: {
     type: Date,
@@ -17,15 +17,37 @@ const profileSchema = new mongoose.Schema({
   },
   gender: {
     type: String,
-    enum: ['male', 'female', 'other'],
-    default: null
+    enum: {
+      values: ['male', 'female', 'other'],
+      message: 'Genre invalide. Valeurs acceptées: male, female, other'
+    },
+    default: null,
+    validate: {
+      validator: function (value) {
+        // Accepter null, undefined ou valeurs vides
+        if (!value || value === '') return true;
+        return ['male', 'female', 'other'].includes(value);
+      },
+      message: 'Genre invalide'
+    }
   },
   maritalStatus: {
     type: String,
-    enum: ['single', 'married', 'divorced', 'widowed'],
-    default: 'single'
+    enum: {
+      values: ['single', 'married', 'divorced', 'widowed'],
+      message: 'Statut matrimonial invalide. Valeurs acceptées: single, married, divorced, widowed'
+    },
+    default: null,
+    validate: {
+      validator: function (value) {
+        // Accepter null, undefined ou valeurs vides
+        if (!value || value === '') return true;
+        return ['single', 'married', 'divorced', 'widowed'].includes(value);
+      },
+      message: 'Statut matrimonial invalide'
+    }
   },
-  
+
   // Adresse complète
   address: {
     street: {
@@ -40,13 +62,13 @@ const profileSchema = new mongoose.Schema({
       default: ''
     }
   },
-  
+
   // Informations professionnelles
   occupation: {
     type: String,
     default: ''
   },
-  
+
   // Informations ecclésiastiques
   churchMembership: {
     isChurchMember: {
@@ -54,7 +76,7 @@ const profileSchema = new mongoose.Schema({
       default: false
     }
   },
-  
+
   // Informations de contact d'urgence
   emergencyContact: {
     name: {
@@ -69,7 +91,7 @@ const profileSchema = new mongoose.Schema({
       type: String,
       default: '',
       validate: {
-        validator: function(value) {
+        validator: function (value) {
           // Valider seulement si le champ n'est pas vide
           return !value || /^\+?[1-9]\d{1,14}$/.test(value);
         },
@@ -80,7 +102,7 @@ const profileSchema = new mongoose.Schema({
       type: String,
       default: '',
       validate: {
-        validator: function(value) {
+        validator: function (value) {
           // Valider seulement si le champ n'est pas vide
           return !value || /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/.test(value);
         },
@@ -88,7 +110,7 @@ const profileSchema = new mongoose.Schema({
       }
     }
   },
-  
+
   // Préférences de donation
   donationPreferences: {
     preferredAmount: {
@@ -114,7 +136,7 @@ const profileSchema = new mongoose.Schema({
       enum: ['don_mensuel', 'don_ponctuel', 'don_libre', 'don_concert_femmes', 'don_ria_2025']
     }]
   },
-  
+
   // Informations financières pour les rapports
   financialInfo: {
     bankName: String,
@@ -133,11 +155,11 @@ const profileSchema = new mongoose.Schema({
       }
     }
   },
-  
 
-  
 
-  
+
+
+
   // Informations sur la famille
   familyInfo: {
     numberOfChildren: {
@@ -154,7 +176,7 @@ const profileSchema = new mongoose.Schema({
       }
     }]
   },
-  
+
   // Historique et notes administratives
   notes: [{
     content: String,
@@ -171,7 +193,7 @@ const profileSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
-  
+
   // Statut du profil
   isComplete: {
     type: Boolean,
@@ -184,7 +206,7 @@ const profileSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
-  
+
   // Métadonnées
   profileCompletionPercentage: {
     type: Number,
@@ -206,27 +228,27 @@ profileSchema.index({ isComplete: 1 });
 profileSchema.index({ createdAt: -1 });
 
 // Virtual pour calculer l'âge
-profileSchema.virtual('age').get(function() {
+profileSchema.virtual('age').get(function () {
   if (!this.dateOfBirth) return null;
   const today = new Date();
   const birthDate = new Date(this.dateOfBirth);
   let age = today.getFullYear() - birthDate.getFullYear();
   const monthDiff = today.getMonth() - birthDate.getMonth();
-  
+
   if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
     age--;
   }
-  
+
   return age;
 });
 
 // Virtual pour vérifier si c'est un membre d'église actif
-profileSchema.virtual('isActiveChurchMember').get(function() {
+profileSchema.virtual('isActiveChurchMember').get(function () {
   return this.churchMembership.isChurchMember && this.churchMembership.membershipDate;
 });
 
 // Méthode pour calculer le pourcentage de completion du profil
-profileSchema.methods.calculateCompletionPercentage = function() {
+profileSchema.methods.calculateCompletionPercentage = function () {
   const requiredFields = [
     'dateOfBirth',
     'gender',
@@ -237,17 +259,17 @@ profileSchema.methods.calculateCompletionPercentage = function() {
     'emergencyContact.relationship',
     'emergencyContact.phone'
   ];
-  
+
   const optionalFields = [
     'maritalStatus',
     'churchMembership.isChurchMember',
     'donationPreferences.preferredAmount',
     'donationPreferences.preferredFrequency'
   ];
-  
+
   let completedRequired = 0;
   let completedOptional = 0;
-  
+
   // Vérifier les champs requis (70% du score)
   requiredFields.forEach(field => {
     const value = this.get(field);
@@ -255,7 +277,7 @@ profileSchema.methods.calculateCompletionPercentage = function() {
       completedRequired++;
     }
   });
-  
+
   // Vérifier les champs optionnels (30% du score)
   optionalFields.forEach(field => {
     const value = this.get(field);
@@ -263,24 +285,24 @@ profileSchema.methods.calculateCompletionPercentage = function() {
       completedOptional++;
     }
   });
-  
+
   const requiredScore = (completedRequired / requiredFields.length) * 70;
   const optionalScore = (completedOptional / optionalFields.length) * 30;
-  
+
   this.profileCompletionPercentage = Math.round(requiredScore + optionalScore);
   this.isComplete = this.profileCompletionPercentage >= 80;
-  
+
   return this.profileCompletionPercentage;
 };
 
 // Middleware pre-save pour calculer automatiquement le pourcentage
-profileSchema.pre('save', function(next) {
+profileSchema.pre('save', function (next) {
   this.calculateCompletionPercentage();
   next();
 });
 
 // Méthode pour ajouter une note
-profileSchema.methods.addNote = function(content, author, isPrivate = false) {
+profileSchema.methods.addNote = function (content, author, isPrivate = false) {
   this.notes.push({
     content,
     author,
@@ -290,7 +312,7 @@ profileSchema.methods.addNote = function(content, author, isPrivate = false) {
 };
 
 // Méthode pour marquer une section comme complétée
-profileSchema.methods.markSectionComplete = function(section) {
+profileSchema.methods.markSectionComplete = function (section) {
   const existingSection = this.completedSections.find(s => s.section === section);
   if (!existingSection) {
     this.completedSections.push({ section });

@@ -116,8 +116,38 @@ const updateProfile = async (req, res) => {
     const updates = req.body;
     const user = await User.findById(req.user.id).populate('profile');
 
+    // Fonction pour nettoyer les valeurs vides
+    const cleanEmptyValues = (obj) => {
+      const cleaned = {};
+      Object.keys(obj).forEach(key => {
+        const value = obj[key];
+        if (value !== null && value !== undefined) {
+          if (typeof value === 'string') {
+            // Pour les chaînes vides, les convertir en null pour les champs enum
+            if (value === '' && (key === 'gender' || key === 'maritalStatus' || key === 'dateOfBirth')) {
+              cleaned[key] = null;
+            } else if (value !== '') {
+              cleaned[key] = value;
+            }
+          } else if (typeof value === 'object' && !Array.isArray(value)) {
+            // Pour les objets imbriqués, nettoyer récursivement
+            const cleanedNested = cleanEmptyValues(value);
+            if (Object.keys(cleanedNested).length > 0) {
+              cleaned[key] = cleanedNested;
+            }
+          } else {
+            cleaned[key] = value;
+          }
+        }
+      });
+      return cleaned;
+    };
+
     // Nettoyer les updates - exclure le champ user pour éviter les erreurs
-    const { user: userField, ...cleanUpdates } = updates;
+    const { user: userField, ...rawUpdates } = updates;
+    const cleanUpdates = cleanEmptyValues(rawUpdates);
+    
+    console.log('🧹 Cleaned updates:', JSON.stringify(cleanUpdates, null, 2));
 
     let profile = user.profile;
     
@@ -147,11 +177,28 @@ const updateProfile = async (req, res) => {
               current = current[keys[i]];
             }
             
-            // Assigner la valeur
-            current[keys[keys.length - 1]] = cleanUpdates[key];
+            // Assigner la valeur avec gestion des champs enum
+            const finalKey = keys[keys.length - 1];
+            let value = cleanUpdates[key];
+            
+            // Convertir les chaînes vides en null pour les champs enum
+            if (typeof value === 'string' && value === '' && 
+                (finalKey === 'gender' || finalKey === 'maritalStatus')) {
+              value = null;
+            }
+            
+            current[finalKey] = value;
           } else {
-            // Champ simple
-            profile[key] = cleanUpdates[key];
+            // Champ simple avec gestion des champs enum
+            let value = cleanUpdates[key];
+            
+            // Convertir les chaînes vides en null pour les champs enum
+            if (typeof value === 'string' && value === '' && 
+                (key === 'gender' || key === 'maritalStatus' || key === 'dateOfBirth')) {
+              value = null;
+            }
+            
+            profile[key] = value;
           }
         }
       });
