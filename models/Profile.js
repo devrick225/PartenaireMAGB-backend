@@ -248,39 +248,21 @@ profileSchema.virtual('isActiveChurchMember').get(function () {
 });
 
 // Méthode pour calculer le pourcentage de completion du profil
-// Alignée avec les champs réellement envoyés par le frontend pour permettre d'atteindre 100%
+// 100% = dateOfBirth + gender + address.street remplis
 profileSchema.methods.calculateCompletionPercentage = function () {
   const isFilled = (value) => value !== null && value !== undefined && value !== '';
 
-  // Blocs requis (70%) : 4 blocs pour que le formulaire front puisse atteindre 100%
-  // - Adresse : rempli si au moins rue OU pays (le front peut n'envoyer qu'un des deux)
-  const hasAddress = isFilled(this.get('address.street')) || isFilled(this.get('address.country'));
-  const requiredChecks = [
-    isFilled(this.get('dateOfBirth')),
-    isFilled(this.get('gender')),
-    hasAddress,
-    isFilled(this.get('occupation'))
+  const requiredFields = [
+    'dateOfBirth',
+    'gender',
+    'address.street'
   ];
-  const completedRequired = requiredChecks.filter(Boolean).length;
-  const requiredTotal = requiredChecks.length;
 
-  // Blocs optionnels (30%) : préférences + contact d'urgence + infos complémentaires
-  // - Contact d'urgence : compté comme un bloc si au moins nom + téléphone
-  const hasEmergencyContact = isFilled(this.get('emergencyContact.name')) && isFilled(this.get('emergencyContact.phone'));
-  const optionalChecks = [
-    isFilled(this.get('maritalStatus')),
-    this.get('churchMembership.isChurchMember') === true || this.get('churchMembership.isChurchMember') === false,
-    isFilled(this.get('donationPreferences.preferredAmount')) || isFilled(this.get('donationPreferences.preferredFrequency')),
-    hasEmergencyContact
-  ];
-  const completedOptional = optionalChecks.filter(Boolean).length;
-  const optionalTotal = optionalChecks.length;
+  const completed = requiredFields.filter(field => isFilled(this.get(field))).length;
+  const total = requiredFields.length;
 
-  const requiredScore = requiredTotal > 0 ? (completedRequired / requiredTotal) * 70 : 0;
-  const optionalScore = optionalTotal > 0 ? (completedOptional / optionalTotal) * 30 : 0;
-
-  this.profileCompletionPercentage = Math.round(requiredScore + optionalScore);
-  this.isComplete = this.profileCompletionPercentage >= 80;
+  this.profileCompletionPercentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+  this.isComplete = this.profileCompletionPercentage >= 100;
 
   return this.profileCompletionPercentage;
 };
