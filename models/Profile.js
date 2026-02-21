@@ -133,7 +133,7 @@ const profileSchema = new mongoose.Schema({
     },
     donationCategories: [{
       type: String,
-      enum: ['don_mensuel', 'don_ponctuel', 'don_libre', 'don_concert_femmes', 'don_ria_2025']
+      enum: ['don_mensuel', 'don_trimestriel', 'don_semestriel', 'don_ponctuel', 'don_libre', 'don_concert_femmes', 'don_ria_2025']
     }]
   },
 
@@ -248,46 +248,36 @@ profileSchema.virtual('isActiveChurchMember').get(function () {
 });
 
 // Méthode pour calculer le pourcentage de completion du profil
+// Alignée avec les champs réellement envoyés par le frontend pour permettre d'atteindre 100%
 profileSchema.methods.calculateCompletionPercentage = function () {
-  const requiredFields = [
-    'dateOfBirth',
-    'gender',
-    'address.street',
-    'address.country',
-    'occupation',
-    'emergencyContact.name',
-    'emergencyContact.relationship',
-    'emergencyContact.phone'
+  const isFilled = (value) => value !== null && value !== undefined && value !== '';
+
+  // Blocs requis (70%) : 4 blocs pour que le formulaire front puisse atteindre 100%
+  // - Adresse : rempli si au moins rue OU pays (le front peut n'envoyer qu'un des deux)
+  const hasAddress = isFilled(this.get('address.street')) || isFilled(this.get('address.country'));
+  const requiredChecks = [
+    isFilled(this.get('dateOfBirth')),
+    isFilled(this.get('gender')),
+    hasAddress,
+    isFilled(this.get('occupation'))
   ];
+  const completedRequired = requiredChecks.filter(Boolean).length;
+  const requiredTotal = requiredChecks.length;
 
-  const optionalFields = [
-    'maritalStatus',
-    'churchMembership.isChurchMember',
-    'donationPreferences.preferredAmount',
-    'donationPreferences.preferredFrequency'
+  // Blocs optionnels (30%) : préférences + contact d'urgence + infos complémentaires
+  // - Contact d'urgence : compté comme un bloc si au moins nom + téléphone
+  const hasEmergencyContact = isFilled(this.get('emergencyContact.name')) && isFilled(this.get('emergencyContact.phone'));
+  const optionalChecks = [
+    isFilled(this.get('maritalStatus')),
+    this.get('churchMembership.isChurchMember') === true || this.get('churchMembership.isChurchMember') === false,
+    isFilled(this.get('donationPreferences.preferredAmount')) || isFilled(this.get('donationPreferences.preferredFrequency')),
+    hasEmergencyContact
   ];
+  const completedOptional = optionalChecks.filter(Boolean).length;
+  const optionalTotal = optionalChecks.length;
 
-  let completedRequired = 0;
-  let completedOptional = 0;
-
-  // Vérifier les champs requis (70% du score)
-  requiredFields.forEach(field => {
-    const value = this.get(field);
-    if (value !== null && value !== undefined && value !== '') {
-      completedRequired++;
-    }
-  });
-
-  // Vérifier les champs optionnels (30% du score)
-  optionalFields.forEach(field => {
-    const value = this.get(field);
-    if (value !== null && value !== undefined && value !== '') {
-      completedOptional++;
-    }
-  });
-
-  const requiredScore = (completedRequired / requiredFields.length) * 70;
-  const optionalScore = (completedOptional / optionalFields.length) * 30;
+  const requiredScore = requiredTotal > 0 ? (completedRequired / requiredTotal) * 70 : 0;
+  const optionalScore = optionalTotal > 0 ? (completedOptional / optionalTotal) * 30 : 0;
 
   this.profileCompletionPercentage = Math.round(requiredScore + optionalScore);
   this.isComplete = this.profileCompletionPercentage >= 80;

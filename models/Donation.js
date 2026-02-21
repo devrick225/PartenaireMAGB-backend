@@ -23,15 +23,17 @@ const donationSchema = new mongoose.Schema({
     default: 'XOF'
   },
   
-  // Catégorie du don
+  // Catégorie du don (aligné avec le frontend)
   category: {
     type: String,
     enum: [
-      'don_mensuel',           // Don mensuel
-      'don_ponctuel',         // Don ponctuel
-      'don_libre',            // Don libre
-      'don_concert_femmes',   // Don Concert des Femmes
-      'don_ria_2025'          // Don RIA 2025
+      'don_mensuel',           // Contribution mensuelle régulière
+      'don_trimestriel',       // Contribution tous les 3 mois
+      'don_semestriel',        // Contribution tous les 6 mois
+      'don_ponctuel',          // Don unique, sans engagement
+      'don_libre',             // Don libre (legacy)
+      'don_concert_femmes',    // Don Concert des Femmes (legacy)
+      'don_ria_2025'           // Don RIA 2025 (legacy)
     ],
     required: [true, 'La catégorie est requise']
   },
