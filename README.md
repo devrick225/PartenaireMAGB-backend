@@ -127,6 +127,8 @@ Créer un fichier `.env` à la racine du projet :
 NODE_ENV=development
 PORT=5000
 HOST=localhost
+FRONTEND_URL=http://localhost:3000
+FRONTEND_NEW_URL=http://localhost:8080
 
 # Base de données MongoDB
 MONGODB_URI=mongodb://localhost:27017/partenaire-magb

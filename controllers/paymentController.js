@@ -544,6 +544,16 @@ const verifyPayment = async (req, res) => {
           );
           break;
 
+        case 'paydunya':
+          if (!payment.paydunya?.token) {
+            return res.status(400).json({
+              success: false,
+              error: 'Token PayDunya manquant pour ce paiement'
+            });
+          }
+          verificationResult = await paydunyaService.checkPaymentStatus(payment.paydunya.token);
+          break;
+
         default:
           return res.status(400).json({
             success: false,
@@ -589,6 +599,64 @@ const verifyPayment = async (req, res) => {
             data: null
           });
         }
+      } else if (payment.provider === 'paydunya') {
+        const status = verificationResult?.status || 'pending';
+
+        if (status === 'completed') {
+          await payment.markCompleted({
+            paydunya: {
+              status: 'completed',
+              completedAt: new Date(),
+              rawResponse: verificationResult.rawResponse
+            }
+          });
+
+          payment.donation.status = 'completed';
+          await payment.donation.save();
+          await payment.user.updateDonationStats(payment.amount);
+
+          return res.json({
+            success: true,
+            message: 'Paiement PayDunya confirmé',
+            data: {
+              status: 'completed',
+              verifiedAt: payment.transaction.completedAt || new Date()
+            }
+          });
+        }
+
+        if (status === 'pending') {
+          return res.json({
+            success: true,
+            message: 'Paiement en attente de confirmation',
+            data: {
+              status: 'pending'
+            }
+          });
+        }
+
+        if (status === 'not_found') {
+          return res.json({
+            success: true,
+            message: 'Transaction non encore visible côté fournisseur',
+            data: {
+              status: 'pending'
+            }
+          });
+        }
+
+        await payment.markFailed(verificationResult?.error || 'Paiement PayDunya non confirmé');
+        payment.donation.status = 'failed';
+        await payment.donation.save();
+
+        return res.json({
+          success: true,
+          message: 'Paiement PayDunya échoué',
+          data: {
+            status: 'failed',
+            details: verificationResult?.error || 'Paiement non confirmé'
+          }
+        });
       } else {
         // Logique pour autres fournisseurs (CinetPay, Stripe, etc.)
         if (verificationResult.success) {

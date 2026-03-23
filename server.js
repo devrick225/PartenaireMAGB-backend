@@ -14,6 +14,8 @@ const ticketRoutes = require('./routes/tickets');
 const webhookRoutes = require('./routes/webhooks');
 const ministryRoutes = require('./routes/ministries');
 const documentsRoutes = require('./routes/documents');
+const notificationsRoutes = require('./routes/notifications');
+const linksRoutes = require('./routes/links');
 
 // Import des middlewares
 const errorHandler = require('./middleware/errorHandler');
@@ -26,12 +28,20 @@ const cronJobsService = require('./services/cronJobs');
 const app = express();
 
 // Configuration CORS
+const allowedOrigins = [
+  process.env.FRONTEND_URL || 'http://localhost:3000',
+  process.env.ADMIN_URL || 'http://localhost:3001',
+  process.env.FRONTEND_NEW_URL || 'http://localhost:8080',
+  'https://partenairemagb-frontend.onrender.com'
+].filter(Boolean);
+
 const corsOptions = {
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:3000',
-    process.env.ADMIN_URL || 'http://localhost:3001',
-    'https://partenairemagb-frontend.onrender.com'
-  ],
+  origin: (origin, callback) => {
+    // Autorise les appels serveur-à-serveur et outils sans Origin
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Origin non autorisée par CORS'));
+  },
   credentials: true,
   optionsSuccessStatus: 200
 };
@@ -66,6 +76,8 @@ app.use('/api/tickets', ticketRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/ministries', ministryRoutes);
 app.use('/api/documents', documentsRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/links', linksRoutes);
 
 // Route de santé
 app.get('/health', (req, res) => {
