@@ -68,20 +68,40 @@ class MoneyFusionService {
     description = 'DON PARTENAIRE MAGB'
   }) {
     try {
-      // Créer une instance FusionPay
       const payment = new FusionPay(this.apiUrl);
 
-      console.log('📱 Callback URL MoneyFusion:', callbackUrl);
+      // Résoudre l'URL publique du backend
+      // Priorité: BACKEND_URL (prod) > VERCEL_URL (auto Vercel) > FRONTEND_URL > fallback
+      const rawBackendUrl = process.env.BACKEND_URL 
+        || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null)
+        || process.env.FRONTEND_URL;
 
-      // Configurer le paiement avec l'API fluide
-      
-      // Forcer l'utilisation du nom complet et nettoyer les espaces
+      // S'assurer que l'URL est bien HTTPS (requis par MoneyFusion)
+      const publicBackendUrl = rawBackendUrl
+        ? rawBackendUrl.replace(/^http:\/\/localhost(:\d+)?/, '').replace(/^http:\/\//, 'https://')
+        : null;
+
+      if (!publicBackendUrl || publicBackendUrl.includes('localhost')) {
+        console.error('❌ BACKEND_URL non configuré ou pointe vers localhost. MoneyFusion ne peut pas accéder à cette URL.');
+        console.error('   Configurez BACKEND_URL avec votre URL de production (ex: https://votre-api.vercel.app)');
+        throw new Error('BACKEND_URL doit être une URL HTTPS publique pour MoneyFusion');
+      }
+
+      // return_url: MoneyFusion redirige l'utilisateur ici après le paiement
+      // Utiliser l'URL de production du frontend (HTTPS requis par MoneyFusion)
+      const frontendUrl = process.env.FRONTEND_URL_PROD || process.env.FRONTEND_URL || 'https://partenairemagb-frontend.onrender.com';
+      const backendReturnUrl = `${frontendUrl}/callback?donationId=${donationId}`;
+      const webhookUrl = `${publicBackendUrl}/api/webhooks/moneyfusion`;
+
+      console.log('🔗 MoneyFusion return_url (HTTPS):', backendReturnUrl);
+      console.log('🔗 MoneyFusion webhook_url (HTTPS):', webhookUrl);
+
       const cleanClientName = customerInfo.name.trim().replace(/\s+/g, ' ');
       
       payment
         .totalPrice(parseFloat(amount))
         .addArticle(description, parseFloat(amount))
-        .clientName(cleanClientName) // Utiliser le nom nettoyé
+        .clientName(cleanClientName)
         .clientNumber(customerInfo.phone)
         .addInfo({
           donation_id: donationId,
@@ -90,8 +110,8 @@ class MoneyFusionService {
           platform: 'partenaire-magb',
           type: 'donation'
         })
-        .returnUrl(callbackUrl || this.generateMobileCallbackUrl('MONEYFUSION_' + Date.now(), donationId))
-        .webhookUrl(`${process.env.BACKEND_URL || process.env.FRONTEND_URL}/api/webhooks/moneyfusion`);
+        .returnUrl(backendReturnUrl)
+        .webhookUrl(webhookUrl);
 
       // Effectuer le paiement
       const response = await payment.makePayment();
@@ -319,7 +339,7 @@ class MoneyFusionService {
         
         console.log(`💰 Statut paiement mis à jour: ${oldPaymentStatus} -> completed (MoneyFusion: paid)`);
         
-      } else if (moneyFusionData.statut === 'failed') {
+      } else if (moneyFusionData.statut === 'failure' || moneyFusionData.statut === 'failed' || moneyFusionData.statut === 'no paid') {
         // Marquer le paiement comme échoué
         await paymentRecord.markFailed(originalResponse.message || 'Paiement échoué');
         
@@ -392,12 +412,14 @@ class MoneyFusionService {
 
   /**
    * Mapper les statuts MoneyFusion vers nos statuts internes
+   * Selon la doc: paid, pending, failure, no paid
    */
   mapStatus(moneyFusionStatus) {
     const statusMap = {
       'paid': 'completed',
       'pending': 'pending',
-      'failed': 'failed',
+      'failure': 'failed',   // Statut officiel doc MoneyFusion
+      'failed': 'failed',    // Alias de sécurité
       'no paid': 'failed',
       'cancelled': 'cancelled'
     };
@@ -407,20 +429,28 @@ class MoneyFusionService {
 
   /**
    * Traiter les notifications webhook MoneyFusion
+   * 
+   * Selon la doc, la structure reçue est:
+   * { event, personal_Info, tokenPay, numeroSend, nomclient, numeroTransaction, Montant, frais, return_url, webhook_url, createdAt }
+   * 
+   * IMPORTANT: MoneyFusion peut envoyer plusieurs notifications pour une même transaction:
+   * - Répétition de payin.session.pending pendant le traitement
+   * - payin.session.completed après confirmation
+   * - payin.session.cancelled en cas d'échec
    */
   async processWebhook(webhookData, signature = null, timestamp = null) {
     try {
       console.log('🔔 MoneyFusion - Traitement webhook:', webhookData);
 
-      // Validation de base des données webhook
       if (!webhookData || typeof webhookData !== 'object') {
         throw new Error('Données webhook invalides');
       }
 
-      // MoneyFusion envoie les données directement dans le webhook
+      // Structure exacte selon la doc MoneyFusion
       const { 
-        tokenPay, 
-        statut, 
+        event,            // payin.session.pending | payin.session.completed | payin.session.cancelled
+        tokenPay,         // Token unique de la transaction
+        statut,           // Présent dans certaines réponses (paid, pending, failure, no paid)
         numeroTransaction, 
         Montant, 
         frais,
@@ -431,15 +461,27 @@ class MoneyFusionService {
         createdAt 
       } = webhookData;
 
-      // Validation des champs requis
-      if (!tokenPay || !statut) {
-        throw new Error('Champs requis manquants dans le webhook MoneyFusion');
+      if (!tokenPay) {
+        throw new Error('tokenPay manquant dans le webhook MoneyFusion');
       }
 
-      const eventType = this.getWebhookEventType(statut);
-      const mappedStatus = this.mapStatus(statut);
+      // Déterminer le type d'événement et le statut mappé
+      // Priorité au champ 'event' (source de vérité selon la doc)
+      const eventType = event 
+        ? this.mapEventToType(event)
+        : this.getWebhookEventType(statut);
 
-      console.log(`📨 MoneyFusion - Webhook ${eventType} pour transaction ${tokenPay} (statut: ${statut} -> ${mappedStatus})`);
+      // Dériver le statut depuis l'event si 'statut' absent
+      let resolvedStatut = statut;
+      if (!resolvedStatut && event) {
+        if (event === 'payin.session.completed') resolvedStatut = 'paid';
+        else if (event === 'payin.session.cancelled') resolvedStatut = 'failure';
+        else if (event === 'payin.session.pending') resolvedStatut = 'pending';
+      }
+      
+      const mappedStatus = this.mapStatus(resolvedStatut || 'pending');
+
+      console.log(`📨 MoneyFusion - Webhook event: ${event || 'N/A'}, statut: ${resolvedStatut} -> ${mappedStatus}, token: ${tokenPay}`);
 
       const result = {
         type: eventType,
@@ -454,13 +496,13 @@ class MoneyFusionService {
           paymentMethod: moyen,
           customData: personal_Info || [],
           completedAt: createdAt,
-          originalStatus: statut,
+          originalStatus: resolvedStatut,
+          originalEvent: event,
           provider: 'moneyfusion',
           webhookTimestamp: new Date().toISOString()
         }
       };
 
-      // Notifier via WebSocket selon le type d'événement
       try {
         websocketService.notifyWebhookReceived(tokenPay, 'moneyfusion', mappedStatus, webhookData);
       } catch (wsError) {
@@ -475,7 +517,21 @@ class MoneyFusionService {
   }
 
   /**
-   * Déterminer le type d'événement webhook selon le statut
+   * Mapper les événements webhook MoneyFusion vers nos types internes
+   * Selon la doc: payin.session.pending, payin.session.completed, payin.session.cancelled
+   */
+  mapEventToType(event) {
+    const eventMap = {
+      'payin.session.pending': 'payment_pending',
+      'payin.session.completed': 'payment_completed',
+      'payin.session.cancelled': 'payment_failed'
+    };
+    
+    return eventMap[event] || 'payment_updated';
+  }
+
+  /**
+   * Déterminer le type d'événement webhook selon le statut (fallback)
    */
   getWebhookEventType(statut) {
     switch (statut) {
@@ -559,7 +615,15 @@ class MoneyFusionService {
           results.checked++;
           
           // Vérifier le statut auprès de MoneyFusion
-          const verificationResult = await this.verifyPayment(payment.transactionId, payment);
+          // Le token est stocké dans payment.moneyfusion.token selon la doc
+          const token = payment.moneyfusion?.token || payment.transaction?.externalId;
+          if (!token) {
+            console.warn(`⚠️ Paiement ${payment._id} sans token MoneyFusion, ignoré`);
+            results.errors++;
+            continue;
+          }
+          
+          const verificationResult = await this.verifyPayment(token, payment);
           
           if (verificationResult.success && verificationResult.status === 'completed') {
             // Marquer comme complété
@@ -662,39 +726,31 @@ class MoneyFusionService {
 
   /**
    * Traiter un callback de paiement MoneyFusion et rediriger vers l'app mobile
+   * Selon la doc, MoneyFusion redirige vers return_url après le paiement
    */
   async processCallback(callbackData) {
     try {
       const { token, statut, donation_id, transaction_id, numeroTransaction, Montant } = callbackData;
       
-      console.log('📱 Callback MoneyFusion reçu:', { token, statut, donation_id, transaction_id, numeroTransaction, Montant });
+      console.log('📱 Callback MoneyFusion reçu:', { token, statut, donation_id, transaction_id });
       
-      // Déterminer le statut selon la réponse MoneyFusion
-      let status = 'completed';
+      // Mapper le statut MoneyFusion (paid, pending, failure, no paid)
+      let status = 'pending';
       if (statut === 'paid') {
         status = 'completed';
-      } else if (statut === 'failed' || statut === 'cancelled' || statut === 'no paid') {
+      } else if (statut === 'failure' || statut === 'no paid' || statut === 'cancelled' || statut === 'failed') {
         status = 'failed';
       } else if (statut === 'pending') {
         status = 'pending';
-      } else {
-        status = 'pending'; // Par défaut
       }
       
-      // Utiliser les données disponibles pour l'URL de callback
       const transactionId = transaction_id || token || numeroTransaction || `MF_${Date.now()}`;
       const donationId = donation_id || 'UNKNOWN';
       
-      // Générer l'URL de deep link pour l'app mobile
-      const mobileCallbackUrl = this.generateMobileCallbackUrl(
-        transactionId,
-        donationId,
-        status
-      );
+      const mobileCallbackUrl = this.generateMobileCallbackUrl(transactionId, donationId, status);
       
       console.log('🔗 Redirection MoneyFusion vers:', mobileCallbackUrl);
       
-      // Optionnel : Enregistrer le callback pour audit
       try {
         const Payment = require('../models/Payment');
         const payment = await Payment.findOne({ 
@@ -707,11 +763,7 @@ class MoneyFusionService {
             'callback_received',
             `Callback MoneyFusion reçu: ${statut}`,
             null,
-            {
-              callbackData,
-              mobileRedirectUrl: mobileCallbackUrl,
-              status: status
-            }
+            { callbackData, mobileRedirectUrl: mobileCallbackUrl, status }
           );
           await payment.save();
         }
@@ -731,10 +783,7 @@ class MoneyFusionService {
       
     } catch (error) {
       console.error('Erreur processCallback MoneyFusion:', error);
-      
-      // En cas d'erreur, rediriger vers une page d'erreur
       const fallbackUrl = this.generateMobileCallbackUrl('ERROR', 'UNKNOWN', 'failed');
-      
       return {
         success: false,
         redirectUrl: fallbackUrl,

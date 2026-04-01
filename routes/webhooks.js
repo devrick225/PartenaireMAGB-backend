@@ -433,58 +433,82 @@ router.post('/mtn-mobile-money', express.json(), async (req, res) => {
 router.post('/moneyfusion', express.json(), async (req, res) => {
   try {
     const payload = req.body;
-    const signature = req.headers['x-signature'];
-    const timestamp = req.headers['x-timestamp'];
 
     console.log('🔔 MoneyFusion webhook reçu:', payload);
 
-    // Traiter le webhook
-    const webhookResult = await moneyFusionService.processWebhook(payload, signature, timestamp);
+    // Traiter le webhook via le service
+    const webhookResult = await moneyFusionService.processWebhook(payload);
 
-    // Trouver le paiement correspondant
+    // Chercher le paiement par moneyfusion.token (champ tokenPay selon la doc)
     const payment = await Payment.findOne({
-      'moneyfusion.transactionId': webhookResult.transactionId,
+      'moneyfusion.token': webhookResult.transactionId,
       provider: 'moneyfusion'
     }).populate('user donation');
 
     if (!payment) {
-      console.error('❌ Paiement non trouvé pour webhook MoneyFusion:', webhookResult.transactionId);
-      return res.status(404).json({
+      console.error('❌ Paiement non trouvé pour webhook MoneyFusion token:', webhookResult.transactionId);
+      // Répondre 200 quand même pour éviter les retries MoneyFusion
+      return res.status(200).json({
         success: false,
-        error: 'Paiement non trouvé'
+        message: 'Paiement non trouvé, ignoré'
       });
     }
 
-    // Ajouter le webhook à l'historique
-    payment.addWebhook('moneyfusion', webhookResult.type, webhookResult.data?.reference, payload, signature);
+    // Déduplication: ignorer si le statut n'a pas changé
+    const incomingStatus = webhookResult.status;
+    const currentStatus = payment.status;
 
-    // Traiter selon le type d'événement
+    if (
+      (incomingStatus === 'completed' && currentStatus === 'completed') ||
+      (incomingStatus === 'failed' && currentStatus === 'failed') ||
+      (incomingStatus === 'cancelled' && currentStatus === 'cancelled')
+    ) {
+      console.log(`⏭️ Webhook MoneyFusion ignoré (statut déjà ${currentStatus}):`, webhookResult.transactionId);
+      return res.status(200).json({ success: true, message: 'Notification redondante ignorée' });
+    }
+
+    // Ajouter le webhook à l'historique
+    payment.addWebhook('moneyfusion', webhookResult.type, webhookResult.data?.reference || payload.tokenPay, payload);
+
     switch (webhookResult.type) {
       case 'payment_completed':
         if (payment.status !== 'completed') {
           console.log('✅ Paiement MoneyFusion complété:', webhookResult.transactionId);
-          
-          // Marquer le paiement comme complété
+
           await payment.markCompleted({
             moneyfusion: {
               ...payment.moneyfusion,
-              status: 'completed',
+              status: 'paid',
+              transactionReference: webhookResult.data?.reference,
               completedAt: new Date(),
-              metadata: webhookResult.data
+              fees: { amount: webhookResult.data?.fees, currency: payment.currency },
+              paymentMethod: webhookResult.data?.paymentMethod,
+              apiResponse: payload
             }
           });
 
-          // Mettre à jour la donation
-          payment.donation.status = 'completed';
-          await payment.donation.save();
+          // Lier le paiement à la donation et mettre à jour son statut
+          if (payment.donation) {
+            payment.donation.status = 'completed';
+            payment.donation.payment = payment._id; // Lier le paiement
+            payment.donation.addToHistory('completed', 'Don complété via paiement MoneyFusion', null, {
+              paymentId: payment._id,
+              transactionId: webhookResult.transactionId,
+              amount: webhookResult.data?.amount
+            });
+            await payment.donation.save();
+          }
 
-          // Mettre à jour les statistiques utilisateur
-          await payment.user.updateDonationStats(payment.amount);
+          if (payment.user) {
+            await payment.user.updateDonationStats(payment.amount);
+          }
 
-          // Notifier via WebSocket
-          websocketService.notifyPaymentCompleted(payment, payment.donation);
+          try {
+            websocketService.notifyPaymentCompleted(payment, payment.donation);
+          } catch (wsErr) {
+            console.warn('⚠️ WebSocket notifyPaymentCompleted:', wsErr.message);
+          }
 
-          // Envoyer le reçu par email
           try {
             await emailService.sendDonationReceiptEmail(
               payment.user.email,
@@ -496,8 +520,7 @@ router.post('/moneyfusion', express.json(), async (req, res) => {
                 donationDate: payment.donation.createdAt,
                 paymentMethod: 'MoneyFusion',
                 category: payment.donation.category,
-                transactionId: webhookResult.transactionId,
-                paymentId: webhookResult.data?.reference
+                transactionId: webhookResult.transactionId
               }
             );
           } catch (emailError) {
@@ -509,52 +532,64 @@ router.post('/moneyfusion', express.json(), async (req, res) => {
       case 'payment_failed':
         if (payment.status !== 'failed') {
           console.log('❌ Paiement MoneyFusion échoué:', webhookResult.transactionId);
-          
+
           await payment.markFailed(
-            webhookResult.data?.errorMessage || 'Paiement refusé par MoneyFusion',
+            webhookResult.data?.originalStatus || 'Paiement refusé par MoneyFusion',
             'PAYMENT_FAILED'
           );
 
-          // Mettre à jour les données MoneyFusion
-          payment.moneyfusion = {
-            ...payment.moneyfusion,
-            status: 'failed',
-            errorMessage: webhookResult.data?.errorMessage,
-            failedAt: new Date(),
-            metadata: webhookResult.data
-          };
-          
-          await payment.save();
+          if (payment.donation && payment.donation.status !== 'failed') {
+            payment.donation.status = 'failed';
+            payment.donation.addToHistory('failed', 'Don échoué suite au paiement MoneyFusion', null, {
+              paymentId: payment._id,
+              reason: webhookResult.data?.originalStatus
+            });
+            await payment.donation.save();
+          }
 
-          // Notifier via WebSocket
-          websocketService.notifyPaymentFailed(
-            payment, 
-            payment.donation,
-            { 
-              message: webhookResult.data?.errorMessage || 'Paiement échoué',
+          try {
+            websocketService.notifyPaymentFailed(payment, payment.donation, {
+              message: webhookResult.data?.originalStatus || 'Paiement échoué',
               code: 'PAYMENT_FAILED'
-            }
-          );
+            });
+          } catch (wsErr) {
+            console.warn('⚠️ WebSocket notifyPaymentFailed:', wsErr.message);
+          }
         }
         break;
 
       case 'payment_pending':
-        if (payment.status !== 'processing') {
+        if (!['processing', 'completed'].includes(payment.status)) {
           console.log('⏳ Paiement MoneyFusion en attente:', webhookResult.transactionId);
-          
+
           payment.status = 'processing';
           payment.moneyfusion = {
             ...payment.moneyfusion,
             status: 'pending',
-            pendingAt: new Date(),
             metadata: webhookResult.data
           };
-          
           payment.addToHistory('processing', 'Paiement en cours de traitement via MoneyFusion');
           await payment.save();
 
-          // Notifier via WebSocket
-          websocketService.notifyPaymentStatusUpdate(payment, 'pending', 'processing');
+          try {
+            websocketService.notifyPaymentStatusUpdate(payment, 'pending', 'processing');
+          } catch (wsErr) {
+            console.warn('⚠️ WebSocket notifyPaymentStatusUpdate:', wsErr.message);
+          }
+        }
+        break;
+
+      case 'payment_cancelled':
+        if (!['cancelled', 'completed'].includes(payment.status)) {
+          payment.status = 'cancelled';
+          payment.addToHistory('cancelled', 'Paiement annulé via MoneyFusion');
+          await payment.save();
+
+          if (payment.donation && !['completed', 'cancelled'].includes(payment.donation.status)) {
+            payment.donation.status = 'failed';
+            payment.donation.addToHistory('failed', 'Don annulé suite au paiement MoneyFusion');
+            await payment.donation.save();
+          }
         }
         break;
 
@@ -564,7 +599,6 @@ router.post('/moneyfusion', express.json(), async (req, res) => {
 
     console.log(`📢 Webhook MoneyFusion traité: ${payment._id} -> ${payment.status}`);
 
-    // Répondre rapidement à MoneyFusion
     res.status(200).json({
       success: true,
       message: 'Webhook traité avec succès',
@@ -811,126 +845,6 @@ router.get('/fusionpay/exchange-rates', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la récupération des taux de change'
-    });
-  }
-});
-
-// @desc    Webhook MoneyFusion
-// @route   POST /api/webhooks/moneyfusion
-// @access  Public (webhook de MoneyFusion)
-router.post('/moneyfusion', express.json(), async (req, res) => {
-  try {
-    const webhookData = req.body;
-    
-    console.log('MoneyFusion webhook reçu:', webhookData);
-
-    // Traiter le webhook MoneyFusion
-    const webhookResult = await moneyFusionService.processWebhook(webhookData);
-
-    // Trouver le paiement correspondant
-    const payment = await Payment.findOne({
-      'moneyfusion.token': webhookResult.transactionId
-    }).populate('user donation');
-
-    if (!payment) {
-      console.error('Paiement non trouvé pour webhook MoneyFusion:', webhookResult.transactionId);
-      return res.status(404).json({
-        success: false,
-        error: 'Paiement non trouvé'
-      });
-    }
-
-    // Ajouter le webhook à l'historique
-    payment.addWebhook('moneyfusion', webhookResult.type, webhookData.tokenPay || 'unknown', webhookData);
-
-    // Traiter selon le type d'événement
-    switch (webhookResult.type) {
-      case 'payment_completed':
-        if (payment.status !== 'completed') {
-          // Marquer le paiement comme complété
-          await payment.markCompleted({
-            moneyfusion: {
-              ...payment.moneyfusion,
-              status: 'paid',
-              transactionReference: webhookResult.data.reference,
-              completedAt: new Date(),
-              fees: {
-                amount: webhookResult.data.fees,
-                currency: payment.currency
-              },
-              paymentMethod: webhookResult.data.paymentMethod,
-              apiResponse: webhookData
-            }
-          });
-
-          // Mettre à jour la donation
-          payment.donation.status = 'completed';
-          await payment.donation.save();
-
-          // Mettre à jour les statistiques utilisateur
-          await payment.user.updateDonationStats(payment.amount);
-
-          // Envoyer le reçu par email
-          try {
-            await emailService.sendDonationReceiptEmail(
-              payment.user.email,
-              payment.user.firstName,
-              {
-                receiptNumber: payment.donation.receipt.number,
-                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
-                formattedAmount: payment.formattedAmount,
-                donationDate: payment.donation.createdAt,
-                paymentMethod: 'MoneyFusion',
-                category: payment.donation.category
-              }
-            );
-          } catch (emailError) {
-            console.error('Erreur envoi reçu par email:', emailError);
-          }
-
-          console.log(`Paiement MoneyFusion complété: ${payment._id}`);
-        }
-        break;
-
-      case 'payment_failed':
-        if (payment.status !== 'failed') {
-          await payment.markFailed(
-            webhookResult.data.originalStatus || 'Paiement échoué via MoneyFusion'
-          );
-          console.log(`Paiement MoneyFusion échoué: ${payment._id}`);
-        }
-        break;
-
-      case 'payment_pending':
-        if (payment.status !== 'processing') {
-          payment.status = 'processing';
-          payment.addToHistory('processing', 'Paiement en cours de traitement via MoneyFusion');
-          await payment.save();
-        }
-        break;
-
-      case 'payment_cancelled':
-        if (payment.status !== 'cancelled') {
-          payment.status = 'cancelled';
-          payment.addToHistory('cancelled', 'Paiement annulé via MoneyFusion');
-          await payment.save();
-        }
-        break;
-
-      default:
-        console.log('Type de webhook MoneyFusion non géré:', webhookResult.type);
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Webhook MoneyFusion traité avec succès'
-    });
-
-  } catch (error) {
-    console.error('Erreur traitement webhook MoneyFusion:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors du traitement du webhook MoneyFusion'
     });
   }
 });

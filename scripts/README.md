@@ -73,6 +73,29 @@ node scripts/cleanDatabase.js test
 node scripts/cleanDatabase.js force
 ```
 
+### ✅ Script de Validation MoneyFusion (`validateMoneyFusionIntegration.js`)
+
+Valide la conformité de l'intégration MoneyFusion avec la documentation officielle.
+
+**Utilisation :**
+```bash
+# Lancer la validation complète
+node scripts/validateMoneyFusionIntegration.js
+```
+
+**Tests effectués :**
+- ✅ Variables d'environnement
+- ✅ Configuration du service
+- ✅ Structure des données de paiement
+- ✅ Mapping des statuts
+- ✅ Types d'événements webhook
+- ✅ Mécanisme de retry
+- ✅ Calcul des frais
+- ✅ URLs de callback
+
+**Rapport généré :**
+Consultez `docs/MONEYFUSION_API_AUDIT.md` pour le rapport détaillé.
+
 ### 💾 Script de Sauvegarde (`backupDatabase.js`)
 
 Crée une sauvegarde complète de la base de données au format JSON.

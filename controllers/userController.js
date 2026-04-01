@@ -546,6 +546,45 @@ const updateUserStatus = async (req, res) => {
   }
 };
 
+// @desc    Modifier les informations d'un utilisateur (admin)
+// @route   PUT /api/users/:id/admin-update
+// @access  Private (Admin only)
+const adminUpdateUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { firstName, lastName, email, phone, country, city, isEmailVerified, isPhoneVerified } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, error: 'ID utilisateur invalide' });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'Utilisateur non trouvé' });
+    }
+
+    if (firstName !== undefined) user.firstName = firstName;
+    if (lastName !== undefined) user.lastName = lastName;
+    if (email !== undefined) user.email = email;
+    if (phone !== undefined) user.phone = phone;
+    if (country !== undefined) user.country = country;
+    if (city !== undefined) user.city = city;
+    if (typeof isEmailVerified === 'boolean') user.isEmailVerified = isEmailVerified;
+    if (typeof isPhoneVerified === 'boolean') user.isPhoneVerified = isPhoneVerified;
+
+    await user.save({ validateBeforeSave: false });
+
+    res.json({
+      success: true,
+      message: 'Utilisateur mis à jour',
+      data: { user: { id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email, phone: user.phone, country: user.country, city: user.city, isEmailVerified: user.isEmailVerified, isPhoneVerified: user.isPhoneVerified } }
+    });
+  } catch (error) {
+    console.error('Erreur adminUpdateUser:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la modification' });
+  }
+};
+
 // @desc    Historique des dons d'un utilisateur
 // @route   GET /api/users/:id/donations
 // @access  Private (Owner or Admin)
@@ -1233,6 +1272,7 @@ module.exports = {
   getUsers,
   updateUserRole,
   updateUserStatus,
+  adminUpdateUser,
   getUserDonations,
   getUserStats,
   uploadAvatar,

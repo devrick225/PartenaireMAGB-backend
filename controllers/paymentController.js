@@ -203,15 +203,15 @@ const initializePayment = async (req, res) => {
           break;
 
         case 'moneyfusion':
-          // Générer directement l'URL de callback mobile pour MoneyFusion
-          const mobileCallbackUrl = generateMobileCallbackUrl('MONEYFUSION_' + Date.now(), donationId);
+          // Déterminer la plateforme (web ou mobile) via le header ou le body
+          const platform = req.body.platform || (req.headers['user-agent']?.match(/Mobile|Android|iPhone/i) ? 'mobile' : 'web');
           
           initializationResult = await moneyFusionService.initializePayment({
             amount: donation.amount,
             currency: donation.currency,
             customerInfo,
             donationId,
-            callbackUrl: mobileCallbackUrl,
+            callbackUrl: platform,
             description: 'DON PARTENAIRE MAGB'
           });
 
@@ -348,6 +348,12 @@ const initializePayment = async (req, res) => {
       
       await payment.save();
 
+      // Lier le paiement à la donation si pas encore fait
+      if (!donation.payment) {
+        donation.payment = payment._id;
+        await donation.save();
+      }
+
       res.json({
         success: true,
         message: 'Paiement initialisé avec succès',
@@ -388,42 +394,76 @@ const initializePayment = async (req, res) => {
 // @access  Public
 const paymentCallback = async (req, res) => {
   try {
-    const { transactionId, donationId, status, paymentId, provider, token, statut } = req.query;
+    const { transactionId, donationId, status, paymentId, provider, token, statut, platform } = req.query;
     
-    console.log('📱 Callback de paiement reçu:', { transactionId, donationId, status, paymentId, provider, token, statut });
+    console.log('📱 Callback de paiement reçu:', { transactionId, donationId, status, provider, token, statut, platform });
     
-    let mobileCallbackUrl;
+    let mappedStatus = 'pending';
+    let resolvedDonationId = donationId;
+    let resolvedPaymentId = paymentId;
     
-    // Traitement spécial pour MoneyFusion
+    // Traitement MoneyFusion
     if (provider === 'moneyfusion' || token) {
-      const callbackResult = await moneyFusionService.processCallback({
-        token,
-        statut,
-        donation_id: donationId,
-        transaction_id: transactionId
-      });
-      
-      mobileCallbackUrl = callbackResult.redirectUrl;
+      try {
+        let payment;
+        if (token) {
+          payment = await Payment.findOne({ 'moneyfusion.token': token }).populate('donation');
+        } else if (donationId) {
+          payment = await Payment.findOne({ donation: donationId, provider: 'moneyfusion' }).sort({ createdAt: -1 }).populate('donation');
+        }
+        
+        if (payment) {
+          resolvedDonationId = payment.donation?._id?.toString() || donationId;
+          resolvedPaymentId = payment._id.toString();
+          
+          const mfStatus = statut || status;
+          if (mfStatus === 'success' || mfStatus === 'completed' || mfStatus === 'paid') {
+            mappedStatus = 'completed';
+          } else if (mfStatus === 'failed' || mfStatus === 'error' || mfStatus === 'failure' || mfStatus === 'no paid') {
+            mappedStatus = 'failed';
+          } else if (mfStatus === 'cancelled') {
+            mappedStatus = 'cancelled';
+          }
+          
+          console.log('✅ Paiement trouvé:', { paymentId: payment._id, status: mappedStatus });
+        } else {
+          mappedStatus = 'failed';
+          console.error('❌ Paiement MoneyFusion non trouvé:', { token, donationId });
+        }
+      } catch (error) {
+        console.error('❌ Erreur traitement callback MoneyFusion:', error);
+        mappedStatus = 'failed';
+      }
     } else {
-      // Générer l'URL de deep link pour l'app mobile (autres providers)
-      mobileCallbackUrl = generateMobileCallbackUrl(
-        transactionId || paymentId, 
-        donationId, 
-        status || 'completed'
-      );
+      mappedStatus = status || 'pending';
     }
     
-    console.log('🔗 Redirection vers:', mobileCallbackUrl);
+    // Déterminer la destination: web frontend ou deep link mobile
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const callbackParams = `status=${mappedStatus}&donationId=${resolvedDonationId || ''}&paymentId=${resolvedPaymentId || ''}&transactionId=${token || transactionId || ''}`;
     
-    // Rediriger vers l'app mobile
-    res.redirect(mobileCallbackUrl);
+    // Si platform=web ou si le User-Agent est un navigateur desktop, rediriger vers le frontend web
+    const isWeb = platform === 'web' || (!platform && !req.headers['user-agent']?.match(/Mobile|Android|iPhone/i));
+    
+    let redirectUrl;
+    if (isWeb) {
+      redirectUrl = `${frontendUrl}/paiements/callback?${callbackParams}`;
+    } else {
+      redirectUrl = generateMobileCallbackUrl(
+        token || transactionId || 'UNKNOWN',
+        resolvedDonationId || 'UNKNOWN',
+        mappedStatus
+      );
+      if (resolvedPaymentId) redirectUrl += `&paymentId=${resolvedPaymentId}`;
+    }
+    
+    console.log('🔗 Redirection vers:', redirectUrl);
+    res.redirect(redirectUrl);
     
   } catch (error) {
     console.error('Erreur paymentCallback:', error);
-    
-    // En cas d'erreur, rediriger vers une page d'erreur ou l'app
-    const fallbackUrl = generateMobileCallbackUrl('ERROR', 'UNKNOWN', 'failed');
-    res.redirect(fallbackUrl);
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    res.redirect(`${frontendUrl}/paiements/callback?status=failed&error=callback_error`);
   }
 };
 

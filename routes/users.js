@@ -8,6 +8,7 @@ const {
   getUsers,
   updateUserRole,
   updateUserStatus,
+  adminUpdateUser,
   getUserDonations,
   getUserStats,
   uploadAvatar,
@@ -348,6 +349,9 @@ router.put('/:id/role', authenticateToken, authorizeRoles('admin'), updateRoleVa
 
 // PUT /api/users/:id/status - Activer/Désactiver un utilisateur (admin seulement)
 router.put('/:id/status', authenticateToken, authorizeRoles('admin'), updateStatusValidation, updateUserStatus);
+
+// PUT /api/users/:id/admin-update - Modifier les infos d'un utilisateur (admin seulement)
+router.put('/:id/admin-update', authenticateToken, authorizeRoles('admin'), adminUpdateUser);
 
 // GET /api/users/:id/donations - Historique des dons d'un utilisateur
 router.get('/:id/donations', authenticateToken, authorizeOwnerOrAdmin, [

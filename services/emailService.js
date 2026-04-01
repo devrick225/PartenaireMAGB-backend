@@ -535,6 +535,51 @@ class EmailService {
     `;
   }
 
+
+  getTicketUpdatedTemplate(firstName, ticketDetails) {
+    return `
+      <!DOCTYPE html><html><head><meta charset="utf-8"><title>Ticket mis à jour</title>
+        <style>body{font-family:Arial,sans-serif;line-height:1.6;color:#333}.container{max-width:600px;margin:0 auto;padding:20px}.header{background:linear-gradient(135deg,#f39c12 0%,#e67e22 100%);color:white;padding:30px;text-align:center;border-radius:8px 8px 0 0}.content{background:#fff;padding:30px;border:1px solid #ddd}.ticket-info{background:#fff3cd;border:1px solid #ffc107;padding:15px;border-radius:5px;margin:20px 0}.footer{background:#f8f9fa;padding:20px;text-align:center;color:#666;border-radius:0 0 8px 8px}</style>
+      </head>
+      <body><div class="container">
+        <div class="header"><h1>Ticket mis a jour</h1><p>Support PARTENAIRE MAGB</p></div>
+        <div class="content">
+          <h2>Bonjour ${firstName},</h2>
+          <p>Votre ticket de support a ete mis a jour :</p>
+          <div class="ticket-info">
+            <h3>Ticket #${ticketDetails.ticketNumber}</h3>
+            <p><strong>Sujet :</strong> ${ticketDetails.subject}</p>
+            <p><strong>Nouveau statut :</strong> ${this.getStatusLabel(ticketDetails.status)}</p>
+          </div>
+          <p>Connectez-vous pour voir les details et repondre.</p>
+        </div>
+        <div class="footer"><p>PARTENAIRE MAGB</p></div>
+      </div></body></html>
+    `;
+  }
+
+  getTicketResolvedTemplate(firstName, ticketDetails) {
+    return `
+      <!DOCTYPE html><html><head><meta charset="utf-8"><title>Ticket resolu</title>
+        <style>body{font-family:Arial,sans-serif;line-height:1.6;color:#333}.container{max-width:600px;margin:0 auto;padding:20px}.header{background:linear-gradient(135deg,#28a745 0%,#20c997 100%);color:white;padding:30px;text-align:center;border-radius:8px 8px 0 0}.content{background:#fff;padding:30px;border:1px solid #ddd}.ticket-info{background:#d4edda;border:1px solid #c3e6cb;padding:15px;border-radius:5px;margin:20px 0}.footer{background:#f8f9fa;padding:20px;text-align:center;color:#666;border-radius:0 0 8px 8px}</style>
+      </head>
+      <body><div class="container">
+        <div class="header"><h1>Ticket resolu</h1><p>Support PARTENAIRE MAGB</p></div>
+        <div class="content">
+          <h2>Bonjour ${firstName},</h2>
+          <p>Votre ticket de support a ete resolu :</p>
+          <div class="ticket-info">
+            <h3>Ticket #${ticketDetails.ticketNumber}</h3>
+            <p><strong>Sujet :</strong> ${ticketDetails.subject}</p>
+            <p><strong>Resolution :</strong> ${ticketDetails.resolution || 'Probleme resolu par notre equipe.'}</p>
+          </div>
+          <p>Si le probleme persiste, ouvrez un nouveau ticket.</p>
+        </div>
+        <div class="footer"><p>PARTENAIRE MAGB</p></div>
+      </div></body></html>
+    `;
+  }
+
   getWelcomeEmailTemplate(firstName) {
     return `
       <!DOCTYPE html>
