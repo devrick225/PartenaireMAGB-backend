@@ -275,15 +275,11 @@ donationSchema.pre('save', async function(next) {
     const year = new Date().getFullYear();
     const month = String(new Date().getMonth() + 1).padStart(2, '0');
     
-    // Compter les donations du mois pour générer un numéro séquentiel
-    const count = await this.constructor.countDocuments({
-      createdAt: {
-        $gte: new Date(year, new Date().getMonth(), 1),
-        $lt: new Date(year, new Date().getMonth() + 1, 1)
-      }
-    });
+    // Utiliser un compteur basé sur le timestamp + random pour éviter les doublons
+    const timestamp = Date.now().toString(36);
+    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
     
-    this.receipt.number = `DON-${year}${month}-${String(count + 1).padStart(4, '0')}`;
+    this.receipt.number = `DON-${year}${month}-${timestamp}-${random}`;
   }
   
   next();
