@@ -170,7 +170,7 @@ const initializePayment = async (req, res) => {
             amount: donation.amount,
             currency: donation.currency,
             donationId,
-            callbackUrl: generateMobileCallbackUrl('PAYPAL_' + Date.now(), donationId)
+            callbackUrl: `${process.env.FRONTEND_URL || process.env.FRONTEND_URL_PROD}/callback?donationId=${donationId}&provider=paypal`
           });
 
           payment.paypal = {

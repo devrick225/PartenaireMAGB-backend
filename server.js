@@ -159,11 +159,10 @@ const startServer = async () => {
     // Fermer les connexions WebSocket
     websocketService.closeAll();
     
-    server.close(() => {
-      mongoose.connection.close(false, () => {
-        console.log('Connexion MongoDB fermée.');
-        process.exit(0);
-      });
+    server.close(async () => {
+      await mongoose.connection.close();
+      console.log('Connexion MongoDB fermée.');
+      process.exit(0);
     });
   };
 

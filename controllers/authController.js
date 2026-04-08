@@ -831,53 +831,44 @@ const sendPhoneVerificationCode = async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'Utilisateur non trouvé'
-      });
+    if (!user) return res.status(404).json({ success: false, error: 'Utilisateur non trouvé' });
+    if (user.isPhoneVerified) return res.status(400).json({ success: false, error: 'Numéro de téléphone déjà vérifié' });
+    if (!user.phone) return res.status(400).json({ success: false, error: 'Aucun numéro de téléphone enregistré' });
+
+    // Utiliser Twilio Verify si SERVICE_SID configuré
+    if (process.env.TWILIO_SERVICE_SID && process.env.TWILIO_ACCOUNT_SID) {
+      try {
+        await smsService.sendVerificationCode(user.phone);
+        console.log(`✅ Code Twilio Verify envoyé à ${user.phone}`);
+        return res.json({ success: true, message: 'Code de vérification envoyé par SMS' });
+      } catch (twilioError) {
+        console.error('❌ Erreur Twilio Verify:', twilioError.message);
+        // Fallback sur code manuel si Twilio échoue
+      }
     }
 
-    if (user.isPhoneVerified) {
-      return res.status(400).json({
-        success: false,
-        error: 'Numéro de téléphone déjà vérifié'
-      });
-    }
-
-    if (!user.phone) {
-      return res.status(400).json({
-        success: false,
-        error: 'Aucun numéro de téléphone enregistré'
-      });
-    }
-
-    // Générer un code à 6 chiffres
+    // Fallback: code manuel stocké en base
     const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
+    const codeExpires = new Date(Date.now() + 10 * 60 * 1000);
     user.phoneVerificationCode = verificationCode;
     user.phoneVerificationCodeExpires = codeExpires;
     await user.save({ validateBeforeSave: false });
 
-    // Pour le moment, on log le code (en production, utiliser un service SMS)
+    try {
+      await smsService.sendPhoneVerificationCode(user.phone, verificationCode, user.firstName);
+    } catch (smsError) {
+      console.error('Erreur envoi SMS:', smsError.message);
+    }
+
     console.log(`Code SMS pour ${user.phone}: ${verificationCode}`);
-
-    // TODO: Intégrer un service SMS réel (Twilio, etc.)
-    // await smsService.sendVerificationCode(user.phone, verificationCode);
-
     res.json({
       success: true,
       message: 'Code de vérification envoyé par SMS',
-      // En mode développement, retourner le code pour les tests
       ...(process.env.NODE_ENV === 'development' && { code: verificationCode })
     });
   } catch (error) {
     console.error('Erreur sendPhoneVerificationCode:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors de l\'envoi du code de vérification'
-    });
+    res.status(500).json({ success: false, error: 'Erreur lors de l\'envoi du code' });
   }
 };
 
@@ -889,54 +880,43 @@ const verifyPhoneCode = async (req, res) => {
     const { code } = req.body;
     const user = await User.findById(req.user.id).select('+phoneVerificationCode +phoneVerificationCodeExpires');
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'Utilisateur non trouvé'
-      });
+    if (!user) return res.status(404).json({ success: false, error: 'Utilisateur non trouvé' });
+    if (user.isPhoneVerified) return res.status(400).json({ success: false, error: 'Numéro de téléphone déjà vérifié' });
+
+    // Utiliser Twilio Verify si SERVICE_SID configuré
+    if (process.env.TWILIO_SERVICE_SID && process.env.TWILIO_ACCOUNT_SID) {
+      try {
+        const result = await smsService.checkVerificationCode(user.phone, code);
+        if (!result.valid) {
+          return res.status(400).json({ success: false, error: 'Code de vérification invalide ou expiré' });
+        }
+        user.isPhoneVerified = true;
+        user.phoneVerificationCode = undefined;
+        user.phoneVerificationCodeExpires = undefined;
+        await user.save({ validateBeforeSave: false });
+        return res.json({ success: true, message: 'Numéro de téléphone vérifié avec succès' });
+      } catch (twilioError) {
+        console.error('❌ Erreur Twilio Verify check:', twilioError.message);
+        // Fallback sur vérification manuelle
+      }
     }
 
-    if (user.isPhoneVerified) {
-      return res.status(400).json({
-        success: false,
-        error: 'Numéro de téléphone déjà vérifié'
-      });
-    }
-
-    console.log('Debug verification SMS:', {
-      receivedCode: code,
-      storedCode: user.phoneVerificationCode,
-      expiresAt: user.phoneVerificationCodeExpires,
-      now: new Date(),
-      isExpired: user.phoneVerificationCodeExpires < new Date()
-    });
-
-    // Vérifier le code et l'expiration
+    // Fallback: vérification manuelle du code stocké en base
     if (!user.phoneVerificationCode || 
         user.phoneVerificationCode !== code ||
         user.phoneVerificationCodeExpires < new Date()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Code de vérification invalide ou expiré'
-      });
+      return res.status(400).json({ success: false, error: 'Code de vérification invalide ou expiré' });
     }
 
-    // Marquer le téléphone comme vérifié
     user.isPhoneVerified = true;
     user.phoneVerificationCode = undefined;
     user.phoneVerificationCodeExpires = undefined;
     await user.save({ validateBeforeSave: false });
 
-    res.json({
-      success: true,
-      message: 'Numéro de téléphone vérifié avec succès'
-    });
+    res.json({ success: true, message: 'Numéro de téléphone vérifié avec succès' });
   } catch (error) {
     console.error('Erreur verifyPhoneCode:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors de la vérification du code'
-    });
+    res.status(500).json({ success: false, error: 'Erreur lors de la vérification du code' });
   }
 };
 

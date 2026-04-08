@@ -290,10 +290,14 @@ class PaymentService {
         throw new Error('Erreur lors de la création du client');
       }
 
+      // Stripe ne supporte pas XOF - convertir en EUR (1 EUR ≈ 655 XOF)
+      const stripeAmount = currency === 'XOF' ? Math.round((amount / 655) * 100) : Math.round(amount * 100);
+      const stripeCurrency = currency === 'XOF' ? 'eur' : currency.toLowerCase();
+
       // Créer le Payment Intent
       const paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(amount * 100), // Stripe utilise les centimes
-        currency: currency.toLowerCase(),
+        amount: stripeAmount,
+        currency: stripeCurrency,
         customer: customer.id,
         payment_method_types: [paymentMethod || 'card'],
         metadata: {
@@ -353,6 +357,10 @@ class PaymentService {
     try {
       const { amount, currency, donationId, callbackUrl } = paymentData;
 
+      // PayPal ne supporte pas XOF - convertir en USD (1 USD ≈ 600 XOF)
+      const paypalAmount = currency === 'XOF' ? (amount / 600).toFixed(2) : amount.toString();
+      const paypalCurrency = currency === 'XOF' ? 'USD' : currency;
+
       // Obtenir le token d'accès PayPal
       const accessToken = await this.getPayPalAccessToken();
 
@@ -360,8 +368,8 @@ class PaymentService {
         intent: 'CAPTURE',
         purchase_units: [{
           amount: {
-            currency_code: currency,
-            value: amount.toString()
+            currency_code: paypalCurrency,
+            value: paypalAmount
           },
           description: 'DON PARTENAIRE MAGB',
           custom_id: donationId.toString()
@@ -457,7 +465,7 @@ class PaymentService {
   }
 
   getPayPalBaseUrl() {
-    return process.env.PAYPAL_ENVIRONMENT === 'production'
+    return process.env.PAYPAL_MODE === 'production' || process.env.PAYPAL_ENVIRONMENT === 'production'
       ? 'https://api.paypal.com'
       : 'https://api.sandbox.paypal.com';
   }

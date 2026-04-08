@@ -18,8 +18,8 @@ const router = express.Router();
 const createDonationValidation = [
   body('amount')
     .isNumeric()
-    .isFloat({ min: 100 })
-    .withMessage('Le montant minimum est de 100'),
+    .isFloat({ min: 100, max: 2000000 })
+    .withMessage('Le montant doit être entre 100 et 2 000 000'),
   body('currency')
     .isIn(['XOF', 'EUR', 'USD'])
     .withMessage('Devise non supportée'),
