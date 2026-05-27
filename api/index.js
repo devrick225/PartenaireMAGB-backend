@@ -12,9 +12,6 @@ const connectDB = async () => {
   try {
     const connection = await mongoose.connect(process.env.MONGODB_URI, {
       bufferCommands: false,
-      bufferMaxEntries: 0,
-      useFindAndModify: false,
-      useCreateIndex: true
     });
 
     cachedConnection = connection;

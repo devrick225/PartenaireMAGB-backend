@@ -170,15 +170,15 @@ const createTicket = async (req, res) => {
       console.error('Erreur envoi email création ticket:', emailError);
     }
 
-    // Notifier les admins (optionnel - peut être configuré)
+    // Notifier les admins en parallèle (Promise.all évite les envois séquentiels)
     try {
       const admins = await User.find({ 
         role: { $in: ['admin', 'moderator'] },
         'emailNotifications.tickets': true 
       }).select('email firstName');
 
-      for (const admin of admins) {
-        await emailService.sendTicketNotificationEmail(
+      await Promise.all(admins.map(admin =>
+        emailService.sendTicketNotificationEmail(
           admin.email,
           admin.firstName,
           {
@@ -190,8 +190,8 @@ const createTicket = async (req, res) => {
             createdBy: `${req.user.firstName} ${req.user.lastName}`
           },
           'created'
-        );
-      }
+        ).catch(err => console.error(`Erreur email admin ${admin.email}:`, err))
+      ));
     } catch (emailError) {
       console.error('Erreur notification admins:', emailError);
     }

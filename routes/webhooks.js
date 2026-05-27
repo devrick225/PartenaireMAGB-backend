@@ -8,6 +8,7 @@ const moneyFusionService = require('../services/moneyFusionService');
 const paydunyaService = require('../services/paydunyaService');
 const emailService = require('../services/emailService');
 const websocketService = require('../services/websocketService');
+const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -228,7 +229,7 @@ router.post('/cinetpay', express.json(), async (req, res) => {
 // @desc    Test de connexion CinetPay
 // @route   GET /api/webhooks/cinetpay/test
 // @access  Private (Admin only)
-router.get('/cinetpay/test', async (req, res) => {
+router.get('/cinetpay/test', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
     // Valider la configuration CinetPay
     paymentService.validateCinetPayConfig();
@@ -259,8 +260,8 @@ router.get('/cinetpay/test', async (req, res) => {
 
 // @desc    Obtenir les méthodes de paiement CinetPay disponibles
 // @route   GET /api/webhooks/cinetpay/payment-methods
-// @access  Private
-router.get('/cinetpay/payment-methods', async (req, res) => {
+// @access  Private (Admin only)
+router.get('/cinetpay/payment-methods', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
     const methods = paymentService.getCinetPayPaymentMethods();
     
@@ -764,7 +765,7 @@ router.post('/fusionpay', rawBodyParser, async (req, res) => {
 // @desc    Test de connexion FusionPay
 // @route   GET /api/webhooks/fusionpay/test
 // @access  Private (Admin only)
-router.get('/fusionpay/test', async (req, res) => {
+router.get('/fusionpay/test', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
     const testResult = await fusionPayService.testConnection();
     
@@ -785,8 +786,8 @@ router.get('/fusionpay/test', async (req, res) => {
 
 // @desc    Obtenir les méthodes de paiement FusionPay disponibles
 // @route   GET /api/webhooks/fusionpay/payment-methods
-// @access  Private
-router.get('/fusionpay/payment-methods', async (req, res) => {
+// @access  Private (Admin only)
+router.get('/fusionpay/payment-methods', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
     const { currency = 'XOF', country = 'CI' } = req.query;
     
@@ -818,8 +819,8 @@ router.get('/fusionpay/payment-methods', async (req, res) => {
 
 // @desc    Obtenir les taux de change FusionPay
 // @route   GET /api/webhooks/fusionpay/exchange-rates
-// @access  Private
-router.get('/fusionpay/exchange-rates', async (req, res) => {
+// @access  Private (Admin only)
+router.get('/fusionpay/exchange-rates', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
     const { base = 'XOF' } = req.query;
     
@@ -852,7 +853,7 @@ router.get('/fusionpay/exchange-rates', async (req, res) => {
 // @desc    Test de connexion MoneyFusion
 // @route   GET /api/webhooks/moneyfusion/test
 // @access  Private (Admin only)
-router.get('/moneyfusion/test', async (req, res) => {
+router.get('/moneyfusion/test', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
     const testResult = await moneyFusionService.testConnection();
     
@@ -928,7 +929,8 @@ router.post('/paydunya', express.json(), async (req, res) => {
 
     if (!payment) {
       console.error('❌ Paiement non trouvé pour webhook PayDunya. Token:', webhookData.token);
-      return res.status(404).json({
+      // Retourner 200 pour éviter les retries infinis de PayDunya
+      return res.status(200).json({
         success: false,
         error: 'Paiement non trouvé'
       });

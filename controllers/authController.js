@@ -452,10 +452,11 @@ const requestPasswordResetCode = async (req, res) => {
 
     const user = await User.findOne({ email });
 
+    // Réponse identique que l'utilisateur existe ou non (anti-énumération)
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'Aucun utilisateur trouvé avec cet email'
+      return res.json({
+        success: true,
+        message: 'Si cet email est associé à un compte, vous recevrez un code de réinitialisation.'
       });
     }
 
@@ -498,7 +499,7 @@ const requestPasswordResetCode = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Code de réinitialisation envoyé par email'
+      message: 'Si cet email est associé à un compte, vous recevrez un code de réinitialisation.'
     });
   } catch (error) {
     console.error('Erreur request password reset code:', error);
@@ -525,14 +526,14 @@ const resetPasswordWithCode = async (req, res) => {
       });
     }
 
-    console.log('Debug verification reset code:', {
-      receivedEmail: email,
-      receivedCode: code,
-      storedCode: user.passwordResetCode,
-      expiresAt: user.passwordResetCodeExpires,
-      now: new Date(),
-      isExpired: user.passwordResetCodeExpires ? user.passwordResetCodeExpires < new Date() : true
-    });
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Debug verification reset code:', {
+        receivedEmail: email,
+        receivedCode: code,
+        storedCode: user.passwordResetCode,
+        expiresAt: user.passwordResetCodeExpires,
+      });
+    }
 
     // Vérifier le code et l'expiration
     if (!user.passwordResetCode || 
@@ -790,13 +791,13 @@ const verifyEmailCode = async (req, res) => {
       });
     }
 
-    console.log('Debug verification:', {
-      receivedCode: code,
-      storedCode: user.emailVerificationCode,
-      expiresAt: user.emailVerificationCodeExpires,
-      now: new Date(),
-      isExpired: user.emailVerificationCodeExpires < new Date()
-    });
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Debug verification:', {
+        receivedCode: code,
+        storedCode: user.emailVerificationCode,
+        expiresAt: user.emailVerificationCodeExpires,
+      });
+    }
 
     // Vérifier le code et l'expiration
     if (!user.emailVerificationCode || 
@@ -863,7 +864,9 @@ const sendPhoneVerificationCode = async (req, res) => {
       console.error('Erreur envoi SMS:', smsError.message);
     }
 
-    console.log(`Code SMS pour ${user.phone}: ${verificationCode}`);
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`Code SMS pour ${user.phone}: ${verificationCode}`);
+    }
     res.json({
       success: true,
       message: 'Code de vérification envoyé par SMS',
@@ -932,10 +935,11 @@ const requestPasswordResetSmsCode = async (req, res) => {
 
     const user = await User.findOne({ phone });
 
+    // Réponse identique que le numéro existe ou non (anti-énumération)
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: "Aucun utilisateur trouvé avec ce numéro de téléphone"
+      return res.json({
+        success: true,
+        message: "Si ce numéro est associé à un compte, vous recevrez un code de réinitialisation."
       });
     }
 
@@ -978,7 +982,7 @@ const requestPasswordResetSmsCode = async (req, res) => {
 
     res.json({
       success: true,
-      message: "Code de réinitialisation envoyé par SMS"
+      message: "Si ce numéro est associé à un compte, vous recevrez un code de réinitialisation."
     });
   } catch (error) {
     console.error("Erreur request password reset SMS code:", error);
@@ -1005,14 +1009,14 @@ const resetPasswordWithSmsCode = async (req, res) => {
       });
     }
 
-    console.log("Debug verification reset SMS code:", {
-      receivedPhone: phone,
-      receivedCode: code,
-      storedCode: user.passwordResetCode,
-      expiresAt: user.passwordResetCodeExpires,
-      now: new Date(),
-      isExpired: user.passwordResetCodeExpires ? user.passwordResetCodeExpires < new Date() : true
-    });
+    if (process.env.NODE_ENV === 'development') {
+      console.log("Debug verification reset SMS code:", {
+        receivedPhone: phone,
+        receivedCode: code,
+        storedCode: user.passwordResetCode,
+        expiresAt: user.passwordResetCodeExpires,
+      });
+    }
 
     // Vérifier le code et l'expiration
     if (!user.passwordResetCode || 

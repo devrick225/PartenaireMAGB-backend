@@ -432,7 +432,6 @@ const getDonationStats = async (req, res) => {
 const updateDonation = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -446,6 +445,22 @@ const updateDonation = async (req, res) => {
       return res.status(403).json({
         success: false,
         error: 'Permissions insuffisantes'
+      });
+    }
+
+    // Whitelist des champs modifiables — empêche le mass assignment
+    const ALLOWED_FIELDS = ['amount', 'currency', 'category', 'message', 'isAnonymous', 'status', 'notes'];
+    const updates = {};
+    ALLOWED_FIELDS.forEach(field => {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
+    });
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun champ valide à mettre à jour'
       });
     }
 

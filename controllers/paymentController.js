@@ -396,8 +396,6 @@ const paymentCallback = async (req, res) => {
   try {
     const { transactionId, donationId, status, paymentId, provider, token, statut, platform } = req.query;
     
-    console.log('📱 Callback de paiement reçu:', { transactionId, donationId, status, provider, token, statut, platform });
-    
     let mappedStatus = 'pending';
     let resolvedDonationId = donationId;
     let resolvedPaymentId = paymentId;

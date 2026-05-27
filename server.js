@@ -185,6 +185,18 @@ const startServer = async () => {
 };
 
 if (require.main === module) {
+  // Capturer les erreurs non gérées pour éviter un crash silencieux
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('⚠️ Unhandled Promise Rejection:', reason);
+    // Ne pas crasher le process — laisser le serveur continuer
+  });
+
+  process.on('uncaughtException', (err) => {
+    console.error('💥 Uncaught Exception:', err);
+    // Crasher proprement — une exception non capturée laisse le process dans un état instable
+    process.exit(1);
+  });
+
   startServer();
 }
 

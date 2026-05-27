@@ -92,11 +92,8 @@ router.get('/:id', authenticateToken, getDonation);
 // PUT /api/donations/:id - Modifier un don (admin seulement)
 router.put('/:id', authenticateToken, authorizeRoles('admin', 'moderator', 'treasurer', 'support_agent'), updateDonation);
 
-// PATCH /api/donations/:id/status - Mettre à jour le statut d'une donation
-router.patch('/:id/status', authenticateToken, updateDonationStatus);
-
-// GET /api/donations/recurring - Liste des dons récurrents
-router.get('/recurring', authenticateToken, getRecurringDonations);
+// PATCH /api/donations/:id/status - Mettre à jour le statut d'une donation (système/admin uniquement)
+router.patch('/:id/status', authenticateToken, authorizeRoles('admin', 'moderator', 'treasurer'), updateDonationStatus);
 
 // POST /api/donations/:id/cancel - Annuler un don récurrent
 router.post('/:id/cancel', authenticateToken, [

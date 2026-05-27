@@ -154,7 +154,8 @@ const donationSchema = new mongoose.Schema({
   receipt: {
     number: {
       type: String,
-      unique: true
+      unique: true,
+      sparse: true  // Permet plusieurs documents sans numéro de reçu (null/undefined)
     },
     issued: {
       type: Boolean,
