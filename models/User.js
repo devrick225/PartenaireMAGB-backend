@@ -30,7 +30,7 @@ const userSchema = new mongoose.Schema({
   phone: {
     type: String,
     required: [true, 'Le numéro de téléphone est requis'],
-    match: [/^\+?[1-9]\d{1,14}$/, 'Veuillez entrer un numéro de téléphone valide']
+    match: [/^\+?[0-9]\d{7,14}$/, 'Veuillez entrer un numéro de téléphone valide']
   },
   
   // Authentification

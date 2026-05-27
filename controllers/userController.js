@@ -369,10 +369,12 @@ const getUsers = async (req, res) => {
     if (isActive !== undefined) filter.isActive = isActive === 'true';
     
     if (search) {
+      // Échapper les caractères spéciaux regex pour éviter les attaques ReDoS
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
+        { firstName: { $regex: escapedSearch, $options: 'i' } },
+        { lastName: { $regex: escapedSearch, $options: 'i' } },
+        { email: { $regex: escapedSearch, $options: 'i' } }
       ];
     }
 

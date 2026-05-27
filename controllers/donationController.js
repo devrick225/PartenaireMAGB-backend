@@ -492,13 +492,16 @@ const processRecurringDonations = async () => {
     for (const donation of dueToday) {
       try {
         // Créer un nouveau paiement pour le don récurrent
+        // Utiliser 'moneyfusion' comme provider par défaut pour les récurrents
+        // car 'auto_recurring' n'est pas une valeur valide dans le schéma Payment
+        const recurringProvider = donation.provider || 'moneyfusion';
         const newPayment = await Payment.create({
           user: donation.user._id,
           donation: donation._id,
           amount: donation.amount,
           currency: donation.currency,
           paymentMethod: donation.paymentMethod,
-          provider: 'auto_recurring',
+          provider: recurringProvider,
           status: 'processing'
         });
 

@@ -329,7 +329,9 @@ const updateTicket = async (req, res) => {
           filteredUpdates[field] = updates[field];
         }
       });
-      updates = filteredUpdates;
+      // Utiliser let pour permettre la réassignation
+      Object.keys(updates).forEach(key => delete updates[key]);
+      Object.assign(updates, filteredUpdates);
     }
 
     // Appliquer les mises à jour

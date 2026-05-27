@@ -52,23 +52,37 @@ app.use(cors(corsOptions));
 app.use(logger);
 
 // Rate limiting
-/*
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: {
+    success: false,
     error: 'Trop de requêtes, veuillez réessayer plus tard.'
   }
 });
+
+// Rate limiting strict pour les routes d'authentification
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Trop de tentatives de connexion, veuillez réessayer dans 15 minutes.'
+  }
+});
+
 app.use('/api/', limiter);
-*/
 
 // Parsing des données
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Routes principales
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/donations', donationRoutes);
 app.use('/api/payments', paymentRoutes);

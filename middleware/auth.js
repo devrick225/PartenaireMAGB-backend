@@ -42,9 +42,12 @@ const authenticateToken = async (req, res, next) => {
         });
       }
 
-      // Mettre à jour la dernière connexion
-      user.lastLogin = new Date();
-      await user.save({ validateBeforeSave: false });
+      // Mettre à jour la dernière connexion (sans bloquer la requête)
+      // Utiliser updateOne pour éviter un save() complet sur chaque requête
+      User.updateOne(
+        { _id: user._id },
+        { $set: { lastLogin: new Date() } }
+      ).catch(err => console.error('Erreur mise à jour lastLogin:', err));
 
       req.user = user;
       next();

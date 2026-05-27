@@ -398,6 +398,12 @@ const paymentSchema = new mongoose.Schema({
     completedAt: Date,            // Date de completion
     apiResponse: mongoose.Schema.Types.Mixed, // Réponse complète de l'API
     metadata: mongoose.Schema.Types.Mixed // Métadonnées additionnelles
+  },
+  // Champ d'archivage — remplace la suppression pour préserver l'audit trail financier
+  archived: {
+    type: Boolean,
+    default: false,
+    index: true
   }
 }, {
   timestamps: true,

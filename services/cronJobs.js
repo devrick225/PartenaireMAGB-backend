@@ -90,56 +90,64 @@ class CronJobsService {
         const User = require('../models/User');
         const Donation = require('../models/Donation');
         
-        // Recalculer les statistiques pour tous les utilisateurs
-        const users = await User.find({});
-        let updatedUsers = 0;
-
-        for (const user of users) {
-          try {
-            // Recalculer les statistiques de donation de l'utilisateur
-            const userDonations = await Donation.find({ 
-              user: user._id, 
-              status: 'completed' 
-            });
-
-            // Calculer les statistiques avec validation
-            const totalAmount = userDonations.reduce((sum, donation) => {
-              const amount = Number(donation.amount);
-              return sum + (isNaN(amount) ? 0 : amount);
-            }, 0);
-            const donationCount = userDonations.length;
-
-            // Valider les valeurs calculées
-            const validTotalAmount = isNaN(totalAmount) ? 0 : totalAmount;
-            const validDonationCount = isNaN(donationCount) ? 0 : donationCount;
-
-            // S'assurer que les valeurs actuelles de l'utilisateur sont valides
-            const currentTotal = isNaN(user.totalDonations) ? 0 : user.totalDonations;
-            const currentCount = isNaN(user.donationCount) ? 0 : user.donationCount;
-
-            // Mettre à jour si nécessaire
-            if (currentTotal !== validTotalAmount || currentCount !== validDonationCount) {
-              user.totalDonations = validTotalAmount;
-              user.donationCount = validDonationCount;
-              
-              // Nettoyer aussi les autres champs numériques
-              user.points = isNaN(user.points) ? 0 : user.points;
-              user.level = isNaN(user.level) ? 1 : user.level;
-              
-              await user.save();
-              updatedUsers++;
-              console.log(`📊 Utilisateur ${user._id} mis à jour: ${currentTotal} -> ${validTotalAmount} (${currentCount} -> ${validDonationCount} dons)`);
+        // Utiliser une agrégation MongoDB au lieu d'une boucle N+1
+        // Une seule requête pour calculer les stats de tous les utilisateurs
+        const donationStats = await Donation.aggregate([
+          { $match: { status: 'completed' } },
+          {
+            $group: {
+              _id: '$user',
+              totalAmount: { $sum: '$amount' },
+              donationCount: { $sum: 1 }
             }
-          } catch (error) {
-            console.error(`❌ Erreur mise à jour stats utilisateur ${user._id}:`, error.message);
           }
+        ]);
+
+        // Construire un map pour accès O(1)
+        const statsMap = new Map();
+        donationStats.forEach(stat => {
+          statsMap.set(stat._id.toString(), {
+            totalAmount: isNaN(stat.totalAmount) ? 0 : stat.totalAmount,
+            donationCount: isNaN(stat.donationCount) ? 0 : stat.donationCount
+          });
+        });
+
+        // Mettre à jour en bulk avec bulkWrite
+        const bulkOps = [];
+        const users = await User.find({}).select('_id totalDonations donationCount points level');
+        
+        for (const user of users) {
+          const stats = statsMap.get(user._id.toString()) || { totalAmount: 0, donationCount: 0 };
+          const currentTotal = isNaN(user.totalDonations) ? 0 : user.totalDonations;
+          const currentCount = isNaN(user.donationCount) ? 0 : user.donationCount;
+
+          if (currentTotal !== stats.totalAmount || currentCount !== stats.donationCount) {
+            bulkOps.push({
+              updateOne: {
+                filter: { _id: user._id },
+                update: {
+                  $set: {
+                    totalDonations: stats.totalAmount,
+                    donationCount: stats.donationCount,
+                    points: isNaN(user.points) ? 0 : user.points,
+                    level: isNaN(user.level) ? 1 : user.level
+                  }
+                }
+              }
+            });
+          }
+        }
+
+        let updatedUsers = 0;
+        if (bulkOps.length > 0) {
+          const result = await User.bulkWrite(bulkOps);
+          updatedUsers = result.modifiedCount;
         }
 
         // Traiter les dons récurrents dus
         try {
           const dueToday = await Donation.getDueToday();
           console.log(`📅 ${dueToday.length} dons récurrents dus aujourd'hui`);
-          
           // TODO: Traiter les dons récurrents
         } catch (error) {
           console.error('❌ Erreur traitement dons récurrents:', error.message);
@@ -168,15 +176,20 @@ class CronJobsService {
         
         const Payment = require('../models/Payment');
         
-        // Supprimer les paiements échoués très anciens (plus de 6 mois)
+        // NE PAS supprimer les paiements échoués — ils font partie de l'audit trail financier.
+        // À la place, on les archive en ajoutant un flag pour les exclure des rapports actifs.
         const sixMonthsAgo = new Date(Date.now() - (6 * 30 * 24 * 60 * 60 * 1000));
         
-        const deletedPayments = await Payment.deleteMany({
-          status: 'failed',
-          createdAt: { $lt: sixMonthsAgo }
-        });
+        const archivedPayments = await Payment.updateMany(
+          {
+            status: 'failed',
+            createdAt: { $lt: sixMonthsAgo },
+            archived: { $ne: true }
+          },
+          { $set: { archived: true } }
+        );
 
-        console.log(`🧹 [CRON] Nettoyage terminé - ${deletedPayments.deletedCount} paiements échoués supprimés`);
+        console.log(`🧹 [CRON] Nettoyage terminé - ${archivedPayments.modifiedCount} paiements échoués archivés (non supprimés)`);
 
       } catch (error) {
         console.error('❌ [CRON] Erreur nettoyage:', error);

@@ -38,8 +38,8 @@ const registerValidation = [
     .normalizeEmail()
     .withMessage('Email invalide'),
   body('phone')
-    .matches(/^\+?[1-9]\d{1,14}$/)
-    .withMessage('Numéro de téléphone invalide'),
+    .matches(/^\+?[0-9]\d{7,14}$/)
+    .withMessage('Numéro de téléphone invalide (ex: 0779038069 ou +2250779038069)'),
   body('password')
     .isLength({ min: 8 })
     .withMessage('Le mot de passe doit contenir au moins 8 caractères')

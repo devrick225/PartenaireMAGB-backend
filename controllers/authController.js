@@ -354,10 +354,11 @@ const forgotPassword = async (req, res) => {
 
     const user = await User.findOne({ email });
 
+    // Réponse identique que l'utilisateur existe ou non (anti-énumération de comptes)
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'Aucun utilisateur trouvé avec cet email'
+      return res.json({
+        success: true,
+        message: 'Si cet email est associé à un compte, vous recevrez les instructions de réinitialisation.'
       });
     }
 
@@ -392,7 +393,7 @@ const forgotPassword = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Instructions de réinitialisation envoyées par email'
+      message: 'Si cet email est associé à un compte, vous recevrez les instructions de réinitialisation.'
     });
   } catch (error) {
     console.error('Erreur forgot password:', error);
@@ -469,7 +470,8 @@ const requestPasswordResetCode = async (req, res) => {
     console.log('Debug envoi code reset:', {
       userId: user._id,
       email: user.email,
-      code: resetCode,
+      // Ne jamais logger le code en clair en production
+      ...(process.env.NODE_ENV === 'development' && { code: resetCode }),
       expiresAt: codeExpires
     });
 
@@ -732,7 +734,8 @@ const sendEmailVerificationCode = async (req, res) => {
     console.log('Debug envoi code:', {
       userId: user._id,
       email: user.email,
-      code: verificationCode,
+      // Ne jamais logger le code en clair en production
+      ...(process.env.NODE_ENV === 'development' && { code: verificationCode }),
       expiresAt: codeExpires
     });
 
@@ -947,7 +950,8 @@ const requestPasswordResetSmsCode = async (req, res) => {
     console.log("Debug envoi code reset SMS:", {
       userId: user._id,
       phone: user.phone,
-      code: resetCode,
+      // Ne jamais logger le code en clair en production
+      ...(process.env.NODE_ENV === 'development' && { code: resetCode }),
       expiresAt: codeExpires
     });
 
