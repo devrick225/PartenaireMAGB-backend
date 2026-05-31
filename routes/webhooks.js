@@ -79,7 +79,8 @@ router.post('/cinetpay', express.json(), async (req, res) => {
 
     if (!payment) {
       console.error('❌ Paiement non trouvé pour transaction CinetPay:', cpm_trans_id);
-      return res.status(404).json({
+      // Retourner 200 pour éviter les retries infinis de CinetPay
+      return res.status(200).json({
         success: false,
         error: 'Paiement non trouvé'
       });
@@ -655,7 +656,8 @@ router.post('/fusionpay', rawBodyParser, async (req, res) => {
 
     if (!payment) {
       console.error('Paiement non trouvé pour webhook FusionPay:', webhookResult.transactionId);
-      return res.status(404).json({
+      // Retourner 200 pour éviter les retries infinis de FusionPay
+      return res.status(200).json({
         success: false,
         error: 'Paiement non trouvé'
       });
