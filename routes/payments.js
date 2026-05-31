@@ -113,29 +113,46 @@ router.get('/callback', paymentCallback);
  * Cette route reçoit la redirection après paiement et redirige
  * immédiatement vers le deep link de l'app mobile.
  *
- * Flux : MoneyFusion → HTTPS backend → deep link partenaireMagb://
+ * Flux : MoneyFusion → HTTPS backend → deep link (partenaireMagb:// ou exp://)
+ * Le deep link est passé en paramètre pour supporter Expo Go en dev.
  */
 router.get('/mobile-callback', (req, res) => {
-  const { donationId, provider, token, statut, transactionId } = req.query;
+  const { donationId, provider, token, statut, transactionId, deepLink } = req.query;
 
-  // Construire le deep link vers l'app mobile
-  const params = new URLSearchParams();
-  if (donationId) params.append('donationId', donationId);
-  if (provider) params.append('provider', provider);
-  if (token) params.append('transactionId', token);
-  if (transactionId) params.append('transactionId', transactionId);
   // Mapper le statut MoneyFusion vers le statut interne
   const status = statut === 'paid' ? 'completed'
     : statut === 'failed' ? 'failed'
     : statut === 'cancelled' ? 'cancelled'
     : 'pending';
-  params.append('status', status);
 
-  const deepLink = `partenaireMagb://payment/return?${params.toString()}`;
+  let targetDeepLink;
 
-  // Tenter d'ouvrir l'app via deep link
-  // Si l'app n'est pas installée, rediriger vers le frontend web comme fallback
-  const fallbackUrl = `${process.env.FRONTEND_URL || 'https://partenairemagb-frontend.onrender.com'}/payment-result?${params.toString()}`;
+  if (deepLink) {
+    // Utiliser le deep link fourni par le mobile (supporte Expo Go en dev)
+    const decoded = decodeURIComponent(deepLink);
+    // Ajouter le statut si pas déjà présent
+    const separator = decoded.includes('?') ? '&' : '?';
+    targetDeepLink = decoded.includes('status=')
+      ? decoded.replace(/status=[^&]+/, `status=${status}`)
+      : `${decoded}${separator}status=${status}`;
+    if (token && !targetDeepLink.includes('transactionId=')) {
+      targetDeepLink += `&transactionId=${token}`;
+    }
+  } else {
+    // Fallback : construire le deep link de production
+    const params = new URLSearchParams();
+    if (donationId) params.append('donationId', donationId);
+    if (token) params.append('transactionId', token);
+    if (transactionId) params.append('transactionId', transactionId);
+    params.append('status', status);
+    targetDeepLink = `partenaireMagb://payment/return?${params.toString()}`;
+  }
+
+  // Fallback web si l'app n'est pas installée
+  const fallbackParams = new URLSearchParams();
+  if (donationId) fallbackParams.append('donationId', donationId);
+  fallbackParams.append('status', status);
+  const fallbackUrl = `${process.env.FRONTEND_URL || 'https://partenairemagb-frontend.onrender.com'}/payment-result?${fallbackParams.toString()}`;
 
   // Page HTML qui tente le deep link puis redirige vers le fallback
   res.send(`<!DOCTYPE html>
@@ -143,24 +160,26 @@ router.get('/mobile-callback', (req, res) => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Redirection en cours...</title>
+  <title>Retour vers l'application...</title>
   <style>
     body { font-family: sans-serif; text-align: center; padding: 40px 20px; background: #f5f5f5; }
     .spinner { width: 40px; height: 40px; border: 4px solid #e0e0e0; border-top-color: #59376b; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 20px auto; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    p { color: #666; }
+    p { color: #666; font-size: 16px; }
+    .status { font-weight: bold; color: ${status === 'completed' ? '#4CAF50' : status === 'failed' ? '#F44336' : '#FF9800'}; }
   </style>
 </head>
 <body>
   <div class="spinner"></div>
+  <p>Paiement <span class="status">${status === 'completed' ? 'confirmé ✓' : status === 'failed' ? 'échoué ✗' : 'en cours...'}</span></p>
   <p>Retour vers l'application...</p>
   <script>
     // Tenter d'ouvrir le deep link immédiatement
-    window.location.href = '${deepLink}';
-    // Si l'app ne s'ouvre pas dans 2 secondes, rediriger vers le fallback web
+    window.location.href = '${targetDeepLink}';
+    // Si l'app ne s'ouvre pas dans 3 secondes, rediriger vers le fallback web
     setTimeout(function() {
       window.location.href = '${fallbackUrl}';
-    }, 2000);
+    }, 3000);
   </script>
 </body>
 </html>`);

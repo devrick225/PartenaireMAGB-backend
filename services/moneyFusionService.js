@@ -89,9 +89,13 @@ class MoneyFusionService {
 
       // return_url: MoneyFusion redirige l'utilisateur ici après le paiement.
       // On utilise une route backend intermédiaire qui redirige ensuite vers
-      // le deep link de l'app mobile (partenaireMagb://).
-      // MoneyFusion exige HTTPS — le deep link direct n'est pas accepté.
-      const backendReturnUrl = `${publicBackendUrl}/api/payments/mobile-callback?donationId=${donationId}&provider=moneyfusion`;
+      // le deep link de l'app mobile (partenaireMagb:// ou exp:// en dev).
+      // Le deep link est passé en paramètre pour supporter Expo Go.
+      // callbackUrl contient le deep link fourni par le mobile.
+      const deepLinkParam = callbackUrl && callbackUrl.includes('://') 
+        ? `&deepLink=${encodeURIComponent(callbackUrl)}`
+        : '';
+      const backendReturnUrl = `${publicBackendUrl}/api/payments/mobile-callback?donationId=${donationId}&provider=moneyfusion${deepLinkParam}`;
       const webhookUrl = `${publicBackendUrl}/api/webhooks/moneyfusion`;
 
       const cleanClientName = customerInfo.name.trim().replace(/\s+/g, ' ');
