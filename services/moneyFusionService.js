@@ -87,14 +87,12 @@ class MoneyFusionService {
         throw new Error('BACKEND_URL doit être une URL HTTPS publique pour MoneyFusion');
       }
 
-      // return_url: MoneyFusion redirige l'utilisateur ici après le paiement
-      // Utiliser l'URL de production du frontend (HTTPS requis par MoneyFusion)
-      const frontendUrl = process.env.FRONTEND_URL_PROD || process.env.FRONTEND_URL || 'https://partenairemagb-frontend.onrender.com';
-      const backendReturnUrl = `${frontendUrl}/callback?donationId=${donationId}`;
+      // return_url: MoneyFusion redirige l'utilisateur ici après le paiement.
+      // On utilise une route backend intermédiaire qui redirige ensuite vers
+      // le deep link de l'app mobile (partenaireMagb://).
+      // MoneyFusion exige HTTPS — le deep link direct n'est pas accepté.
+      const backendReturnUrl = `${publicBackendUrl}/api/payments/mobile-callback?donationId=${donationId}&provider=moneyfusion`;
       const webhookUrl = `${publicBackendUrl}/api/webhooks/moneyfusion`;
-
-      console.log('🔗 MoneyFusion return_url (HTTPS):', backendReturnUrl);
-      console.log('🔗 MoneyFusion webhook_url (HTTPS):', webhookUrl);
 
       const cleanClientName = customerInfo.name.trim().replace(/\s+/g, ' ');
       

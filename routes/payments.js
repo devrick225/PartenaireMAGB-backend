@@ -105,6 +105,67 @@ const getPaymentStatsValidation = [
 // GET /api/payments/callback - Callback de paiement (public)
 router.get('/callback', paymentCallback);
 
+/**
+ * GET /api/payments/mobile-callback
+ * Route intermédiaire pour MoneyFusion.
+ *
+ * MoneyFusion exige une URL HTTPS pour le return_url.
+ * Cette route reçoit la redirection après paiement et redirige
+ * immédiatement vers le deep link de l'app mobile.
+ *
+ * Flux : MoneyFusion → HTTPS backend → deep link partenaireMagb://
+ */
+router.get('/mobile-callback', (req, res) => {
+  const { donationId, provider, token, statut, transactionId } = req.query;
+
+  // Construire le deep link vers l'app mobile
+  const params = new URLSearchParams();
+  if (donationId) params.append('donationId', donationId);
+  if (provider) params.append('provider', provider);
+  if (token) params.append('transactionId', token);
+  if (transactionId) params.append('transactionId', transactionId);
+  // Mapper le statut MoneyFusion vers le statut interne
+  const status = statut === 'paid' ? 'completed'
+    : statut === 'failed' ? 'failed'
+    : statut === 'cancelled' ? 'cancelled'
+    : 'pending';
+  params.append('status', status);
+
+  const deepLink = `partenaireMagb://payment/return?${params.toString()}`;
+
+  // Tenter d'ouvrir l'app via deep link
+  // Si l'app n'est pas installée, rediriger vers le frontend web comme fallback
+  const fallbackUrl = `${process.env.FRONTEND_URL || 'https://partenairemagb-frontend.onrender.com'}/payment-result?${params.toString()}`;
+
+  // Page HTML qui tente le deep link puis redirige vers le fallback
+  res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redirection en cours...</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 40px 20px; background: #f5f5f5; }
+    .spinner { width: 40px; height: 40px; border: 4px solid #e0e0e0; border-top-color: #59376b; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 20px auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+  <div class="spinner"></div>
+  <p>Retour vers l'application...</p>
+  <script>
+    // Tenter d'ouvrir le deep link immédiatement
+    window.location.href = '${deepLink}';
+    // Si l'app ne s'ouvre pas dans 2 secondes, rediriger vers le fallback web
+    setTimeout(function() {
+      window.location.href = '${fallbackUrl}';
+    }, 2000);
+  </script>
+</body>
+</html>`);
+});
+
 // POST /api/payments/initialize - Initialiser un paiement
 router.post('/initialize', authenticateToken, initializePaymentValidation, initializePayment);
 
