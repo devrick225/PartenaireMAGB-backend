@@ -3,8 +3,8 @@ const websocketService = require('./websocketService');
 
 class MoneyFusionService {
   constructor() {
-    this.apiUrl = process.env.MONEYFUSION_API_URL || 'https://www.pay.moneyfusion.net/PartenaireMAGB/549726019fa8e8e6/pay/';
-    this.webhookCheckUrl = 'https://www.pay.moneyfusion.net/paiementNotif';
+    this.apiUrl = process.env.MONEYFUSION_API_URL || 'https://pay.moneyfusion.net/PartenaireMAGB/549726019fa8e8e6/pay/';
+    this.webhookCheckUrl = 'https://pay.moneyfusion.net/paiementNotif';
     this.retryAttempts = 3;
     this.retryDelay = 5000; // 5 secondes
   }
