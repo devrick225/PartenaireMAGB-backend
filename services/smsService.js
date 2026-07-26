@@ -1,16 +1,19 @@
-const twilio = require('twilio');
+const AfricasTalking = require('africastalking');
 
 class SmsService {
   constructor() {
-    if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-      this.client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-      this.fromNumber = process.env.TWILIO_PHONE_NUMBER;
-      this.serviceSid = process.env.TWILIO_SERVICE_SID; // Verify Service SID
+    const apiKey  = process.env.AT_API_KEY;
+    const username = process.env.AT_USERNAME; // 'sandbox' en dev, nom du compte en prod
+
+    if (apiKey && username) {
+      const at = AfricasTalking({ apiKey, username });
+      this.sms = at.SMS;
       this.isConfigured = true;
-      console.log('✅ Twilio configuré - SMS activé');
+      console.log(`✅ Africa's Talking configuré (username: ${username}) - SMS activé`);
     } else {
-      console.warn('⚠️ Twilio not configured - SMS services will use development mode');
+      console.warn("⚠️ Africa's Talking non configuré - SMS en mode développement");
       this.isConfigured = false;
+      this.sms = null;
     }
   }
 
@@ -25,74 +28,67 @@ class SmsService {
       }
 
       const formattedNumber = this.formatPhoneNumber(to);
-      
-      const result = await this.client.messages.create({
-        body: message,
-        from: this.fromNumber,
-        to: formattedNumber
+
+      const result = await this.sms.send({
+        to: [formattedNumber],
+        message,
+        // from: 'MAGB' // Optionnel : sender ID alphanumérique (à activer sur AT dashboard)
       });
 
-      console.log(`✅ SMS envoyé à ${to}: ${result.sid}`);
-      return { success: true, messageId: result.sid, status: result.status, mode: 'production' };
+      const recipient = result.SMSMessageData?.Recipients?.[0];
+      const messageId = recipient?.messageId || `at_${Date.now()}`;
+      const status    = recipient?.status || 'unknown';
+
+      console.log(`✅ SMS envoyé à ${formattedNumber}: ${messageId} (${status})`);
+      return { success: true, messageId, status, mode: 'production' };
 
     } catch (error) {
-      console.error('❌ Erreur envoi SMS:', error);
+      console.error("❌ Erreur envoi SMS Africa's Talking:", error);
       throw new Error(`Erreur envoi SMS: ${error.message}`);
     }
   }
 
   /**
-   * Envoyer un code OTP via Twilio Verify (recommandé pour les codes de vérification)
+   * Générer et envoyer un code OTP (Africa's Talking n'a pas de service Verify natif —
+   * on génère le code côté serveur et on l'envoie par SMS, exactement comme avant avec Twilio SMS).
    */
   async sendVerificationCode(phoneNumber) {
     try {
-      if (!this.isConfigured || !this.serviceSid) {
-        // Mode dev: générer un code fictif
+      if (!this.isConfigured) {
         const devCode = Math.floor(100000 + Math.random() * 900000).toString();
         console.log(`📱 [DEV] Code OTP pour ${phoneNumber}: ${devCode}`);
         return { success: true, code: devCode, mode: 'development' };
       }
 
-      const formattedNumber = this.formatPhoneNumber(phoneNumber);
-      
-      const verification = await this.client.verify.v2
-        .services(this.serviceSid)
-        .verifications
-        .create({ to: formattedNumber, channel: 'sms' });
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const message = `Votre code de vérification PARTENAIRE MAGB est : ${code}\n\nCe code expire dans 10 minutes. Ne le partagez jamais.`;
 
-      console.log(`✅ Code Twilio Verify envoyé à ${phoneNumber}: ${verification.status}`);
-      return { success: true, status: verification.status, mode: 'production' };
+      await this.sendSms(phoneNumber, message);
+      return { success: true, code, mode: 'production' };
 
     } catch (error) {
-      console.error('❌ Erreur Twilio Verify sendCode:', error);
+      console.error("❌ Erreur envoi code OTP:", error);
       throw new Error(`Erreur envoi code: ${error.message}`);
     }
   }
 
   /**
-   * Vérifier un code OTP via Twilio Verify
+   * Vérifier un code OTP (comparaison avec le code stocké en base/cache)
+   * Le code est généré par sendVerificationCode et sauvegardé par le controller.
    */
-  async checkVerificationCode(phoneNumber, code) {
+  async checkVerificationCode(phoneNumber, code, storedCode) {
     try {
-      if (!this.isConfigured || !this.serviceSid) {
-        // Mode dev: accepter n'importe quel code à 6 chiffres
+      if (!this.isConfigured) {
         console.log(`📱 [DEV] Vérification code ${code} pour ${phoneNumber}`);
         return { success: true, valid: code.length === 6, mode: 'development' };
       }
 
-      const formattedNumber = this.formatPhoneNumber(phoneNumber);
-      
-      const verificationCheck = await this.client.verify.v2
-        .services(this.serviceSid)
-        .verificationChecks
-        .create({ to: formattedNumber, code });
-
-      const valid = verificationCheck.status === 'approved';
-      console.log(`${valid ? '✅' : '❌'} Code Twilio Verify pour ${phoneNumber}: ${verificationCheck.status}`);
-      return { success: true, valid, status: verificationCheck.status, mode: 'production' };
+      const valid = storedCode && code === storedCode;
+      console.log(`${valid ? '✅' : '❌'} Vérification OTP pour ${phoneNumber}: ${valid ? 'approuvé' : 'refusé'}`);
+      return { success: true, valid, mode: 'production' };
 
     } catch (error) {
-      console.error('❌ Erreur Twilio Verify checkCode:', error);
+      console.error('❌ Erreur vérification OTP:', error);
       return { success: false, valid: false, error: error.message };
     }
   }
@@ -101,11 +97,6 @@ class SmsService {
    * Envoyer un code de vérification de téléphone
    */
   async sendPhoneVerificationCode(phoneNumber, code, firstName = '') {
-    // Utiliser Twilio Verify si disponible, sinon SMS classique
-    if (this.serviceSid) {
-      return await this.sendVerificationCode(phoneNumber);
-    }
-
     const message = `Bonjour ${firstName},\n\nVotre code de vérification PARTENAIRE MAGB est : ${code}\n\nCe code expire dans 10 minutes.\nNe partagez jamais ce code.`;
     return await this.sendSms(phoneNumber, message);
   }
@@ -143,9 +134,12 @@ class SmsService {
     return await this.sendSms(phoneNumber, message);
   }
 
+  // ─── Utilitaires ─────────────────────────────────────────────────────────────
+
   formatPhoneNumber(phoneNumber) {
     let formatted = phoneNumber.replace(/\D/g, '');
-    if (formatted.startsWith('0')) {
+    // Remplacer le 0 de début par l'indicatif Côte d'Ivoire (+225)
+    if (formatted.startsWith('0') && formatted.length <= 10) {
       formatted = '225' + formatted.substring(1);
     }
     if (!formatted.startsWith('+')) {
@@ -155,9 +149,8 @@ class SmsService {
   }
 
   isValidPhoneNumber(phoneNumber) {
-    const phoneRegex = /^\+?[1-9]\d{1,14}$/;
     const cleaned = phoneNumber.replace(/\D/g, '');
-    return phoneRegex.test('+' + cleaned);
+    return /^\+?[1-9]\d{1,14}$/.test('+' + cleaned);
   }
 
   isAvailable() { return this.isConfigured; }
@@ -165,13 +158,11 @@ class SmsService {
   getStatus() {
     return {
       configured: this.isConfigured,
-      verifyEnabled: !!this.serviceSid,
       mode: process.env.NODE_ENV,
-      provider: 'Twilio'
+      provider: "Africa's Talking",
+      username: process.env.AT_USERNAME
     };
   }
 }
 
-const smsService = new SmsService();
-module.exports = smsService;
-
+module.exports = new SmsService();

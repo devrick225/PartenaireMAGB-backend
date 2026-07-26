@@ -839,19 +839,7 @@ const sendPhoneVerificationCode = async (req, res) => {
     if (user.isPhoneVerified) return res.status(400).json({ success: false, error: 'Numéro de téléphone déjà vérifié' });
     if (!user.phone) return res.status(400).json({ success: false, error: 'Aucun numéro de téléphone enregistré' });
 
-    // Utiliser Twilio Verify si SERVICE_SID configuré
-    if (process.env.TWILIO_SERVICE_SID && process.env.TWILIO_ACCOUNT_SID) {
-      try {
-        await smsService.sendVerificationCode(user.phone);
-        console.log(`✅ Code Twilio Verify envoyé à ${user.phone}`);
-        return res.json({ success: true, message: 'Code de vérification envoyé par SMS' });
-      } catch (twilioError) {
-        console.error('❌ Erreur Twilio Verify:', twilioError.message);
-        // Fallback sur code manuel si Twilio échoue
-      }
-    }
-
-    // Fallback: code manuel stocké en base
+    // Envoyer le code via Africa's Talking
     const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
     const codeExpires = new Date(Date.now() + 10 * 60 * 1000);
     user.phoneVerificationCode = verificationCode;
@@ -889,30 +877,18 @@ const verifyPhoneCode = async (req, res) => {
     if (!user) return res.status(404).json({ success: false, error: 'Utilisateur non trouvé' });
     if (user.isPhoneVerified) return res.status(400).json({ success: false, error: 'Numéro de téléphone déjà vérifié' });
 
-    // Utiliser Twilio Verify si SERVICE_SID configuré
-    if (process.env.TWILIO_SERVICE_SID && process.env.TWILIO_ACCOUNT_SID) {
-      try {
-        const result = await smsService.checkVerificationCode(user.phone, code);
-        if (!result.valid) {
-          return res.status(400).json({ success: false, error: 'Code de vérification invalide ou expiré' });
-        }
-        user.isPhoneVerified = true;
-        user.phoneVerificationCode = undefined;
-        user.phoneVerificationCodeExpires = undefined;
-        await user.save({ validateBeforeSave: false });
-        return res.json({ success: true, message: 'Numéro de téléphone vérifié avec succès' });
-      } catch (twilioError) {
-        console.error('❌ Erreur Twilio Verify check:', twilioError.message);
-        // Fallback sur vérification manuelle
-      }
-    }
-
-    // Fallback: vérification manuelle du code stocké en base
+    // Vérification du code stocké en base (Africa's Talking)
     if (!user.phoneVerificationCode || 
         user.phoneVerificationCode !== code ||
         user.phoneVerificationCodeExpires < new Date()) {
       return res.status(400).json({ success: false, error: 'Code de vérification invalide ou expiré' });
     }
+
+    user.isPhoneVerified = true;
+    user.phoneVerificationCode = undefined;
+    user.phoneVerificationCodeExpires = undefined;
+    await user.save({ validateBeforeSave: false });
+    return res.json({ success: true, message: 'Numéro de téléphone vérifié avec succès' });
 
     user.isPhoneVerified = true;
     user.phoneVerificationCode = undefined;
