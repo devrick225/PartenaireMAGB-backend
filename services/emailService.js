@@ -1,28 +1,32 @@
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
 class EmailService {
   constructor() {
-    this.resend = new Resend(process.env.RESEND_API_KEY);
-    this.from = process.env.EMAIL_FROM || 'PARTENAIRE MAGB <onboarding@resend.dev>';
+    this.transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST || 'mail.partenairemagb.com',
+      port: parseInt(process.env.EMAIL_PORT) || 465,
+      secure: parseInt(process.env.EMAIL_PORT) === 465, // SSL sur 465, STARTTLS sur 587
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+      tls: {
+        rejectUnauthorized: false, // nécessaire sur hébergements mutualisés LWS
+      },
+    });
   }
 
   async sendEmail(to, subject, htmlContent, textContent = null) {
     try {
-      const { data, error } = await this.resend.emails.send({
-        from: this.from,
+      const result = await this.transporter.sendMail({
+        from: `"${process.env.EMAIL_FROM_NAME || 'PARTENAIRE MAGB'}" <${process.env.EMAIL_USER}>`,
         to,
         subject,
         html: htmlContent,
-        text: textContent || this.htmlToText(htmlContent)
+        text: textContent || this.htmlToText(htmlContent),
       });
-
-      if (error) {
-        console.error('Erreur Resend:', error);
-        throw new Error(`Erreur envoi email: ${error.message}`);
-      }
-
-      console.log(`Email envoyé à ${to}: ${data.id}`);
-      return { success: true, messageId: data.id };
+      console.log(`Email envoyé à ${to}: ${result.messageId}`);
+      return { success: true, messageId: result.messageId };
     } catch (error) {
       console.error('Erreur envoi email:', error);
       throw new Error(`Erreur envoi email: ${error.message}`);
