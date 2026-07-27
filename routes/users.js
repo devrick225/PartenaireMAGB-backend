@@ -95,9 +95,9 @@ const updateProfileValidation = [
     .trim()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) return true;
-      return value.length >= 1 && value.length <= 20;
+      return value.length >= 1 && value.length <= 50;
     })
-    .withMessage('Code postal invalide'),
+    .withMessage('Code postal invalide (50 caractères max)'),
   body('address.state')
     .optional()
     .trim()
