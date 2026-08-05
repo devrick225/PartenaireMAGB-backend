@@ -691,6 +691,14 @@ class PaymentService {
         percentage: 3.0,
         fixed: 50
       },
+      geniuspay: {
+        percentage: 3.0,
+        fixed: 0
+      },
+      wave: {
+        percentage: 1.0,
+        fixed: 0
+      },
       stripe: {
         percentage: 2.9,
         fixed: currency === 'XOF' ? 30 : 0.30

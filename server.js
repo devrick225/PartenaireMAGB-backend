@@ -27,6 +27,12 @@ const cronJobsService = require('./services/cronJobs');
 
 const app = express();
 
+// Trust proxy — nécessaire derrière Render/Vercel/Nginx qui ajoutent
+// l'en-tête X-Forwarded-For. Sans ça, express-rate-limit lève ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+// et ne peut pas identifier correctement les clients par IP.
+// '1' = faire confiance au premier proxy (Render place un seul proxy devant l'app).
+app.set('trust proxy', 1);
+
 // Configuration CORS
 const allowedOrigins = [
   process.env.FRONTEND_URL || 'http://localhost:3000',
