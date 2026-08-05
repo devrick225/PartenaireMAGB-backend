@@ -22,7 +22,7 @@ const initializePaymentValidation = [
     .isMongoId()
     .withMessage('ID de donation invalide'),
   body('provider')
-    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya', 'geniuspay'])
     .withMessage('Fournisseur de paiement invalide'),
   body('paymentMethod')
     .custom((value, { req }) => {
@@ -40,7 +40,7 @@ const initializePaymentValidation = [
       }
       
       // Pour les autres fournisseurs, utiliser la validation standard
-      const standardMethods = ['card', 'mobile_money', 'bank_transfer', 'paypal', 'crypto', 'moneyfusion'];
+      const standardMethods = ['card', 'mobile_money', 'bank_transfer', 'paypal', 'crypto', 'moneyfusion', 'geniuspay'];
       if (!standardMethods.includes(value)) {
         throw new Error('Méthode de paiement invalide');
       }
@@ -86,7 +86,7 @@ const getPaymentsValidation = [
     .withMessage('Statut invalide'),
   query('provider')
     .optional()
-    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya', 'geniuspay'])
     .withMessage('Fournisseur invalide')
 ];
 
@@ -98,7 +98,7 @@ const getPaymentStatsValidation = [
     .withMessage('Période invalide. Valeurs acceptées: week, month, year'),
   query('provider')
     .optional()
-    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya', 'geniuspay'])
     .withMessage('Fournisseur invalide')
 ];
 

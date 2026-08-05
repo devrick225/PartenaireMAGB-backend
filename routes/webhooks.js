@@ -6,6 +6,7 @@ const User = require('../models/User');
 const fusionPayService = require('../services/fusionPayService');
 const moneyFusionService = require('../services/moneyFusionService');
 const paydunyaService = require('../services/paydunyaService');
+const geniusPayService = require('../services/geniusPayService');
 const emailService = require('../services/emailService');
 const websocketService = require('../services/websocketService');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
@@ -1064,6 +1065,232 @@ router.post('/paydunya', express.json(), async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Erreur lors du traitement du webhook PayDunya'
+    });
+  }
+});
+
+// @desc    Webhook GeniusPay
+// @route   POST /api/webhooks/geniuspay
+// @access  Public (mais avec signature HMAC-SHA256)
+router.post('/geniuspay', rawBodyParser, async (req, res) => {
+  try {
+    const signature = req.headers['x-webhook-signature'];
+    const timestamp = req.headers['x-webhook-timestamp'];
+
+    if (!signature || !timestamp) {
+      return res.status(400).json({
+        success: false,
+        error: 'Headers de signature manquants'
+      });
+    }
+
+    const rawBody = req.body.toString();
+
+    let webhookResult;
+    let webhookPayload;
+    try {
+      webhookPayload = JSON.parse(rawBody);
+    } catch (parseError) {
+      return res.status(400).json({
+        success: false,
+        error: 'Format JSON invalide'
+      });
+    }
+
+    try {
+      webhookResult = await geniusPayService.processWebhook(rawBody, signature, timestamp);
+    } catch (verificationError) {
+      console.error('❌ GeniusPay: Signature webhook invalide:', verificationError.message);
+      return res.status(401).json({
+        success: false,
+        error: 'Signature webhook invalide'
+      });
+    }
+
+    console.log('🔔 GeniusPay webhook reçu:', webhookResult);
+
+    const payment = await Payment.findOne({
+      'geniuspay.reference': webhookResult.transactionId,
+      provider: 'geniuspay'
+    }).populate('user donation');
+
+    if (!payment) {
+      console.error('❌ Paiement non trouvé pour webhook GeniusPay reference:', webhookResult.transactionId);
+      // Répondre 200 quand même pour éviter les retries GeniusPay
+      return res.status(200).json({
+        success: false,
+        message: 'Paiement non trouvé, ignoré'
+      });
+    }
+
+    // Déduplication: ignorer si le statut n'a pas changé
+    const incomingStatus = webhookResult.status;
+    const currentStatus = payment.status;
+
+    if (
+      (incomingStatus === 'completed' && currentStatus === 'completed') ||
+      (incomingStatus === 'failed' && currentStatus === 'failed') ||
+      (incomingStatus === 'cancelled' && currentStatus === 'cancelled') ||
+      (incomingStatus === 'refunded' && currentStatus === 'refunded')
+    ) {
+      console.log(`⏭️ Webhook GeniusPay ignoré (statut déjà ${currentStatus}):`, webhookResult.transactionId);
+      return res.status(200).json({ success: true, message: 'Notification redondante ignorée' });
+    }
+
+    payment.addWebhook('geniuspay', webhookResult.type, webhookResult.data?.reference, webhookPayload);
+
+    switch (webhookResult.type) {
+      case 'payment_completed':
+        if (payment.status !== 'completed') {
+          console.log('✅ Paiement GeniusPay complété:', webhookResult.transactionId);
+
+          await payment.markCompleted({
+            geniuspay: {
+              ...payment.geniuspay,
+              status: 'completed',
+              completedAt: new Date(),
+              fees: webhookResult.data?.fees,
+              netAmount: webhookResult.data?.netAmount,
+              apiResponse: webhookPayload
+            }
+          });
+
+          if (payment.donation) {
+            payment.donation.status = 'completed';
+            payment.donation.payment = payment._id;
+            payment.donation.addToHistory('completed', 'Don complété via paiement GeniusPay', null, {
+              paymentId: payment._id,
+              transactionId: webhookResult.transactionId,
+              amount: webhookResult.data?.amount
+            });
+            await payment.donation.save();
+          }
+
+          if (payment.user) {
+            await payment.user.updateDonationStats(payment.amount);
+          }
+
+          try {
+            websocketService.notifyPaymentCompleted(payment, payment.donation);
+          } catch (wsErr) {
+            console.warn('⚠️ WebSocket notifyPaymentCompleted:', wsErr.message);
+          }
+
+          try {
+            await emailService.sendDonationReceiptEmail(
+              payment.user.email,
+              payment.user.firstName,
+              {
+                receiptNumber: payment.donation.receipt.number,
+                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
+                formattedAmount: payment.formattedAmount,
+                donationDate: payment.donation.createdAt,
+                paymentMethod: 'GeniusPay',
+                category: payment.donation.category,
+                transactionId: webhookResult.transactionId
+              }
+            );
+          } catch (emailError) {
+            console.error('❌ Erreur envoi reçu GeniusPay:', emailError);
+          }
+        }
+        break;
+
+      case 'payment_failed':
+        if (payment.status !== 'failed') {
+          console.log('❌ Paiement GeniusPay échoué:', webhookResult.transactionId);
+
+          await payment.markFailed(
+            webhookResult.data?.originalStatus || 'Paiement refusé par GeniusPay',
+            'PAYMENT_FAILED'
+          );
+
+          if (payment.donation && payment.donation.status !== 'failed') {
+            payment.donation.status = 'failed';
+            payment.donation.addToHistory('failed', 'Don échoué suite au paiement GeniusPay', null, {
+              paymentId: payment._id,
+              reason: webhookResult.data?.originalStatus
+            });
+            await payment.donation.save();
+          }
+
+          try {
+            websocketService.notifyPaymentFailed(payment, payment.donation, {
+              message: webhookResult.data?.originalStatus || 'Paiement échoué',
+              code: 'PAYMENT_FAILED'
+            });
+          } catch (wsErr) {
+            console.warn('⚠️ WebSocket notifyPaymentFailed:', wsErr.message);
+          }
+        }
+        break;
+
+      case 'payment_cancelled':
+        if (!['cancelled', 'completed'].includes(payment.status)) {
+          payment.status = 'cancelled';
+          payment.addToHistory('cancelled', 'Paiement annulé via GeniusPay');
+          await payment.save();
+
+          if (payment.donation && !['completed', 'cancelled'].includes(payment.donation.status)) {
+            payment.donation.status = 'failed';
+            payment.donation.addToHistory('failed', 'Don annulé suite au paiement GeniusPay');
+            await payment.donation.save();
+          }
+        }
+        break;
+
+      case 'payment_refunded':
+        if (payment.status !== 'refunded') {
+          payment.status = 'refunded';
+          payment.geniuspay = {
+            ...payment.geniuspay,
+            status: 'refunded',
+            apiResponse: webhookPayload
+          };
+          payment.addToHistory('refunded', 'Paiement remboursé via GeniusPay');
+          await payment.save();
+        }
+        break;
+
+      case 'payment_pending':
+        if (!['processing', 'completed'].includes(payment.status)) {
+          console.log('⏳ Paiement GeniusPay en attente:', webhookResult.transactionId);
+
+          payment.status = 'processing';
+          payment.geniuspay = {
+            ...payment.geniuspay,
+            status: 'pending',
+            metadata: webhookResult.data
+          };
+          payment.addToHistory('processing', 'Paiement en cours de traitement via GeniusPay');
+          await payment.save();
+
+          try {
+            websocketService.notifyPaymentStatusUpdate(payment, 'pending', 'processing');
+          } catch (wsErr) {
+            console.warn('⚠️ WebSocket notifyPaymentStatusUpdate:', wsErr.message);
+          }
+        }
+        break;
+
+      default:
+        console.warn('⚠️ Type d\'événement GeniusPay non géré:', webhookResult.type);
+    }
+
+    console.log(`📢 Webhook GeniusPay traité: ${payment._id} -> ${payment.status}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Webhook traité avec succès',
+      transaction_id: webhookResult.transactionId,
+      status: payment.status
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur traitement webhook GeniusPay:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du traitement du webhook'
     });
   }
 });

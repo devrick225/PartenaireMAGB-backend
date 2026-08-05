@@ -364,6 +364,7 @@ class ExcelService {
       const providers = {
         'moneyfusion': 'Money Fusion',
         'paydunya': 'PayDunya',
+        'geniuspay': 'GeniusPay',
         'stripe': 'Stripe',
         'paypal': 'PayPal',
         'cinetpay': 'CinetPay'

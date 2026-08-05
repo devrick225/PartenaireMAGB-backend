@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const moneyFusionService = require('./moneyFusionService');
 const fusionPayService = require('./fusionPayService');
+const geniusPayService = require('./geniusPayService');
 const paymentService = require('./paymentService');
 
 class CronJobsService {
@@ -35,6 +36,7 @@ class CronJobsService {
         const results = {
           moneyfusion: { checked: 0, completed: 0, failed: 0, errors: 0 },
           fusionpay: { checked: 0, completed: 0, failed: 0, errors: 0 },
+          geniuspay: { checked: 0, completed: 0, failed: 0, errors: 0 },
           total: { checked: 0, completed: 0, failed: 0, errors: 0 }
         };
 
@@ -60,11 +62,23 @@ class CronJobsService {
           results.fusionpay.errors++;
         }
 
+        // Vérifier GeniusPay (si disponible)
+        try {
+          if (geniusPayService && typeof geniusPayService.checkPendingPayments === 'function') {
+            const gpResults = await geniusPayService.checkPendingPayments(2); // 2 heures
+            results.geniuspay = gpResults;
+            console.log('✅ GeniusPay vérification terminée:', gpResults);
+          }
+        } catch (error) {
+          console.error('❌ Erreur vérification GeniusPay:', error.message);
+          results.geniuspay.errors++;
+        }
+
         // Calculer totaux
-        results.total.checked = results.moneyfusion.checked + results.fusionpay.checked;
-        results.total.completed = results.moneyfusion.completed + results.fusionpay.completed;
-        results.total.failed = results.moneyfusion.failed + results.fusionpay.failed;
-        results.total.errors = results.moneyfusion.errors + results.fusionpay.errors;
+        results.total.checked = results.moneyfusion.checked + results.fusionpay.checked + results.geniuspay.checked;
+        results.total.completed = results.moneyfusion.completed + results.fusionpay.completed + results.geniuspay.completed;
+        results.total.failed = results.moneyfusion.failed + results.fusionpay.failed + results.geniuspay.failed;
+        results.total.errors = results.moneyfusion.errors + results.fusionpay.errors + results.geniuspay.errors;
 
         console.log('🔍 [CRON] Vérification paiements terminée - Total:', results.total);
 

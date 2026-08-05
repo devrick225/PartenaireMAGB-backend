@@ -47,6 +47,7 @@ const paymentSchema = new mongoose.Schema({
       'google_pay',             // Google Pay
       'crypto',                 // Cryptomonnaie
       'moneyfusion',            // MoneyFusion
+      'geniuspay',              // GeniusPay
       // PayDunya - Opérateurs Mobile Money spécifiques
       'orange-money-senegal',   // Orange Money Sénégal
       'wave-senegal',           // Wave Sénégal
@@ -79,6 +80,7 @@ const paymentSchema = new mongoose.Schema({
       'fusionpay',         // FusionPay
       'moneyfusion',       // MoneyFusion (moneyfusion.net)
       'paydunya',          // PayDunya (paydunya.com)
+      'geniuspay',         // GeniusPay (geniuspay.ci)
       'orange_money',      // Orange Money
       'mtn_mobile_money',  // MTN Mobile Money
       'moov_money',        // Moov Money
@@ -399,6 +401,24 @@ const paymentSchema = new mongoose.Schema({
     apiResponse: mongoose.Schema.Types.Mixed, // Réponse complète de l'API
     metadata: mongoose.Schema.Types.Mixed // Métadonnées additionnelles
   },
+
+  // Informations spécifiques à GeniusPay
+  geniuspay: {
+    reference: String,            // Référence de transaction GeniusPay
+    paymentUrl: String,           // checkout_url de redirection
+    status: String,               // Statut GeniusPay (pending, processing, completed, failed, cancelled, refunded, expired)
+    customerInfo: {
+      name: String,
+      phone: String,
+      email: String,
+      country: String
+    },
+    fees: mongoose.Schema.Types.Mixed,   // Frais retournés par l'API à la création
+    netAmount: Number,             // Montant net après frais
+    completedAt: Date,
+    apiResponse: mongoose.Schema.Types.Mixed, // Réponse complète de l'API
+    metadata: mongoose.Schema.Types.Mixed
+  },
   // Champ d'archivage — remplace la suppression pour préserver l'audit trail financier
   archived: {
     type: Boolean,
@@ -427,6 +447,7 @@ paymentSchema.index({ 'fusionpay.transactionId': 1 });
 paymentSchema.index({ 'fusionpay.reference': 1 });
 paymentSchema.index({ 'moneyfusion.token': 1 });
 paymentSchema.index({ 'moneyfusion.transactionReference': 1 });
+paymentSchema.index({ 'geniuspay.reference': 1 });
 paymentSchema.index({ createdAt: -1 });
 
 // Index composé pour les requêtes fréquentes
@@ -596,6 +617,12 @@ paymentSchema.methods.calculateFees = function() {
       const paydunyaService = require('../services/paydunyaService');
       const pdFees = paydunyaService.calculateFees(this.amount, this.currency, this.paymentMethod);
       processingFee = pdFees.totalFee;
+      break;
+    case 'geniuspay':
+      // Calculer les frais GeniusPay
+      const geniusPayService = require('../services/geniusPayService');
+      const gpFees = geniusPayService.calculateFees(this.amount, this.currency);
+      processingFee = gpFees.totalFee;
       break;
     case 'orange_money':
     case 'mtn_mobile_money':

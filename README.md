@@ -25,6 +25,7 @@ Backend API pour l'application de gestion de dons thématiques pour église dév
 - **Mobile Money** - Orange Money, MTN Mobile Money, Moov Money
 - **FusionPay** - Cartes, Mobile Money, Crypto, Virements
 - **MoneyFusion** - API fluide avec package NPM officiel
+- **GeniusPay** - Checkout unifié (Wave, Orange Money, MTN Money, Carte) pour l'Afrique et l'international
 - **Wave** - Portefeuille mobile Wave
 - Gestion des webhooks et vérifications de sécurité
 - Système de remboursements
@@ -153,6 +154,12 @@ STRIPE_WEBHOOK_SECRET=whsec_your-stripe-webhook-secret
 PAYPAL_CLIENT_ID=your-paypal-client-id
 PAYPAL_CLIENT_SECRET=your-paypal-client-secret
 PAYPAL_ENVIRONMENT=sandbox
+
+# Configuration GeniusPay
+GENIUSPAY_API_URL=https://pay.genius.ci/api/v1/merchant
+GENIUSPAY_API_KEY=pk_sandbox_your-geniuspay-public-key
+GENIUSPAY_API_SECRET=sk_sandbox_your-geniuspay-secret-key
+GENIUSPAY_WEBHOOK_SECRET=whsec_sandbox_your-geniuspay-webhook-secret
 
 # Configuration Email
 EMAIL_HOST=smtp.gmail.com

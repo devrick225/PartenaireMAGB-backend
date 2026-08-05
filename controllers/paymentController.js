@@ -7,6 +7,7 @@ const paymentService = require('../services/paymentService');
 const fusionPayService = require('../services/fusionPayService');
 const moneyFusionService = require('../services/moneyFusionService');
 const paydunyaService = require('../services/paydunyaService');
+const geniusPayService = require('../services/geniusPayService');
 const emailService = require('../services/emailService');
 
 // Fonction utilitaire pour générer l'URL de callback mobile
@@ -224,6 +225,37 @@ const initializePayment = async (req, res) => {
               phone: customerInfo.phone
             },
             fees: moneyFusionService.calculateFees(donation.amount, donation.currency),
+            metadata: {
+              donation_id: donationId,
+              customer_email: customerInfo.email,
+              currency: donation.currency,
+              platform: 'partenaire-magb',
+              type: 'donation'
+            }
+          };
+          break;
+
+        case 'geniuspay':
+          initializationResult = await geniusPayService.initializePayment({
+            amount: donation.amount,
+            currency: donation.currency,
+            customerInfo,
+            donationId,
+            description: 'DON PARTENAIRE MAGB'
+          });
+
+          payment.geniuspay = {
+            reference: initializationResult.reference,
+            paymentUrl: initializationResult.paymentUrl,
+            status: 'pending',
+            customerInfo: {
+              name: `${customerInfo.name} ${customerInfo.surname || ''}`.trim(),
+              phone: customerInfo.phone,
+              email: customerInfo.email,
+              country: customerInfo.country
+            },
+            fees: initializationResult.fees,
+            netAmount: initializationResult.netAmount,
             metadata: {
               donation_id: donationId,
               customer_email: customerInfo.email,
@@ -582,6 +614,13 @@ const verifyPayment = async (req, res) => {
           );
           break;
 
+        case 'geniuspay':
+          verificationResult = await geniusPayService.verifyPayment(
+            payment.geniuspay.reference,
+            payment
+          );
+          break;
+
         case 'paydunya':
           if (!payment.paydunya?.token) {
             return res.status(400).json({
@@ -637,6 +676,24 @@ const verifyPayment = async (req, res) => {
             data: null
           });
         }
+      } else if (payment.provider === 'geniuspay') {
+        // Note: La mise à jour des statuts de paiement et donation est déjà gérée
+        // automatiquement dans geniusPayService.verifyPayment()
+        const status = verificationResult?.status || 'pending';
+
+        return res.json({
+          success: true,
+          message: verificationResult.message || 'Vérification effectuée',
+          data: {
+            status,
+            reference: verificationResult.reference,
+            amount: verificationResult.amount,
+            fees: verificationResult.fees,
+            netAmount: verificationResult.netAmount,
+            paymentMethod: verificationResult.paymentMethod,
+            completedAt: verificationResult.completedAt
+          }
+        });
       } else if (payment.provider === 'paydunya') {
         const status = verificationResult?.status || 'pending';
 

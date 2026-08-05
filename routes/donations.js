@@ -30,7 +30,7 @@ const createDonationValidation = [
     .isIn(['one_time', 'recurring'])
     .withMessage('Type de don invalide'),
   body('paymentMethod')
-    .isIn(['card', 'mobile_money', 'bank_transfer', 'paypal', 'moneyfusion', 'paydunya'])
+    .isIn(['card', 'mobile_money', 'bank_transfer', 'paypal', 'moneyfusion', 'paydunya', 'geniuspay'])
     .withMessage('Méthode de paiement invalide'),
   body('recurring.frequency')
     .if(body('type').equals('recurring'))
