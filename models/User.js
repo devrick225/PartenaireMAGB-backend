@@ -583,23 +583,28 @@ userSchema.statics.partnerLevelFor = function(totalDonations) {
   return 'classique';
 };
 
-// Méthode pour mettre à jour les statistiques de donation.
-// L'incrément est fait en base ($inc) et non sur le document en mémoire : le résultat
-// reste correct si le document a été chargé partiellement (populate avec select) ou
-// si deux paiements sont confirmés en même temps.
-userSchema.methods.updateDonationStats = async function(amount) {
-  const validAmount = Number(amount);
-  if (!Number.isFinite(validAmount) || validAmount < 0) {
-    console.error(`❌ Montant invalide pour updateDonationStats: ${amount} (type: ${typeof amount})`);
-    throw new Error('Montant de donation invalide');
+/**
+ * Appliquer un écart aux statistiques du donateur (montant en XOF, nombre de dons).
+ * Positif pour un don encaissé, négatif pour un remboursement ou une annulation.
+ *
+ * L'incrément est fait en base ($inc) et non sur le document en mémoire : le résultat
+ * reste correct si le document a été chargé partiellement (populate avec select) ou
+ * si deux opérations arrivent en même temps.
+ */
+userSchema.methods.applyDonationDelta = async function(amountDelta, countDelta = 0) {
+  const amount = Number(amountDelta);
+  const count = Number(countDelta);
+  if (!Number.isFinite(amount) || !Number.isFinite(count)) {
+    throw new Error('Écart de statistiques invalide');
   }
 
   const User = this.constructor;
-  const earnedPoints = Math.floor(validAmount / 1000); // 1 point pour 1000 XOF ou équivalent
+  // 1 point pour 1000 XOF, dans les deux sens
+  const pointsDelta = Math.sign(amount) * Math.floor(Math.abs(amount) / 1000);
 
-  const updated = await User.findOneAndUpdate(
+  let updated = await User.findOneAndUpdate(
     { _id: this._id },
-    { $inc: { totalDonations: validAmount, donationCount: 1, points: earnedPoints } },
+    { $inc: { totalDonations: amount, donationCount: count, points: pointsDelta } },
     { new: true, projection: 'totalDonations donationCount points level partnerLevel' }
   );
 
@@ -607,7 +612,16 @@ userSchema.methods.updateDonationStats = async function(amount) {
     throw new Error('Utilisateur introuvable pour la mise à jour des statistiques');
   }
 
-  // Niveaux (tous les 1000 points) et niveau de partenaire
+  // Un retrait ne doit jamais laisser de total négatif
+  if (updated.totalDonations < 0 || updated.donationCount < 0 || updated.points < 0) {
+    updated = await User.findOneAndUpdate(
+      { _id: this._id },
+      { $max: { totalDonations: 0, donationCount: 0, points: 0 } },
+      { new: true, projection: 'totalDonations donationCount points level partnerLevel' }
+    );
+  }
+
+  // Le niveau (tous les 1000 points) ne redescend pas ; le niveau de partenaire suit le total
   const level = Math.max(Number(updated.level) || 1, Math.floor((Number(updated.points) || 0) / 1000) + 1);
   const partnerLevel = User.partnerLevelFor(updated.totalDonations);
 
@@ -628,9 +642,20 @@ userSchema.methods.updateDonationStats = async function(amount) {
     this.unmarkModified(field);
   });
 
-  console.log(`✅ Stats utilisateur mises à jour - Amount: ${validAmount}, Total: ${fresh.totalDonations}, Count: ${fresh.donationCount}, Points: ${fresh.points}, Partner Level: ${partnerLevel}`);
+  console.log(`✅ Stats utilisateur mises à jour - Écart: ${amount} (${count >= 0 ? '+' : ''}${count} don), Total: ${fresh.totalDonations}, Count: ${fresh.donationCount}, Points: ${fresh.points}, Partner Level: ${partnerLevel}`);
 
   return this;
+};
+
+// Compter un don encaissé (montant en XOF)
+userSchema.methods.updateDonationStats = async function(amount) {
+  const validAmount = Number(amount);
+  if (!Number.isFinite(validAmount) || validAmount < 0) {
+    console.error(`❌ Montant invalide pour updateDonationStats: ${amount} (type: ${typeof amount})`);
+    throw new Error('Montant de donation invalide');
+  }
+
+  return this.applyDonationDelta(validAmount, 1);
 };
 
 // Méthode pour calculer le niveau de partenaire basé sur le total des dons

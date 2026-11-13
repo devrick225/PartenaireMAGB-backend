@@ -17,9 +17,17 @@ const router = express.Router();
 // Validation pour la création d'un don
 const createDonationValidation = [
   body('amount')
-    .isNumeric()
-    .isFloat({ min: 200, max: 2000000 })
-    .withMessage('Le montant doit être entre 200 et 2 000 000'),
+    .isFloat({ max: 2000000 })
+    .withMessage('Le montant doit être un nombre inférieur ou égal à 2 000 000')
+    .bail()
+    // Minimum selon la devise : 200 XOF, 1 EUR / 1 USD
+    .custom((value, { req }) => {
+      const min = ['EUR', 'USD'].includes(req.body.currency) ? 1 : 200;
+      if (Number(value) < min) {
+        throw new Error(`Le montant minimum est de ${min} ${req.body.currency || 'XOF'}`);
+      }
+      return true;
+    }),
   body('currency')
     .isIn(['XOF', 'EUR', 'USD'])
     .withMessage('Devise non supportée'),

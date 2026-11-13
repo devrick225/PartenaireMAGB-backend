@@ -14,7 +14,16 @@ const donationSchema = new mongoose.Schema({
   amount: {
     type: Number,
     required: [true, 'Le montant est requis'],
-    min: [200, 'Le montant minimum est de 200 XOF']
+    // Le minimum dépend de la devise : 200 XOF, mais 1 EUR / 1 USD
+    // (un minimum unique de 200 rendait impossibles les dons de moins de 200 € ou 200 $)
+    validate: {
+      validator: function(value) {
+        return value >= donationSchema.statics.minAmountFor(this.currency);
+      },
+      message: function(props) {
+        return `Le montant minimum est de 200 XOF (ou 1 EUR / 1 USD) — reçu : ${props.value}`;
+      }
+    }
   },
   currency: {
     type: String,
@@ -134,6 +143,14 @@ const donationSchema = new mongoose.Schema({
     required: [true, 'La méthode de paiement est requise']
   },
   
+  // Montant déjà remboursé au donateur (dans la devise du don). Les statistiques
+  // comptent le montant net ; un don entièrement remboursé passe au statut « refunded ».
+  refundedAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+
   // Échéance d'un don récurrent : don « abonnement » d'origine et rang de l'échéance
   recurringParent: {
     type: mongoose.Schema.ObjectId,
@@ -240,6 +257,11 @@ const donationSchema = new mongoose.Schema({
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
+
+// Montant minimum d'un don selon sa devise
+donationSchema.statics.minAmountFor = function(currency) {
+  return currency === 'EUR' || currency === 'USD' ? 1 : 200;
+};
 
 // Indexes pour les performances
 donationSchema.index({ user: 1 });

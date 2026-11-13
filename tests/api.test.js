@@ -234,6 +234,12 @@ describe('Création de dons', () => {
     expect(res.status).toBe(400);
   });
 
+  test('le minimum dépend de la devise : 50 USD est accepté', async () => {
+    const res = await as(token, request(app).post('/api/donations'))
+      .send({ amount: 50, currency: 'USD', category: 'don_ponctuel', type: 'one_time', paymentMethod: 'card' });
+    expect(res.status).toBe(201);
+  });
+
   test('don récurrent mensuel sans jour précisé : accepté', async () => {
     const res = await as(token, request(app).post('/api/donations')).send({
       amount: 5000, currency: 'XOF', category: 'don_mensuel', type: 'recurring', paymentMethod: 'moneyfusion',
@@ -602,6 +608,164 @@ describe('Accès et garde-fous', () => {
     const profile = await Profile.findOne({ user: owner._id });
     expect(profile.occupation).toBe('Enseignant');
     expect(profile.notes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('Remboursements', () => {
+  let treasurerToken;
+
+  const paidDonation = async (extra = {}) => {
+    const user = await newUser();
+    const donation = await helpers.createDonation(Donation, user, extra);
+    const payment = await helpers.createMoneyFusionPayment(Payment, user, donation);
+    await completion.completePayment(await Payment.findById(payment._id).populate('user donation'), { source: 'test' });
+    return { user, donation, payment };
+  };
+  const refund = (payment, body) => as(treasurerToken, request(app).post(`/api/payments/${payment._id}/refund`)).send(body);
+
+  beforeAll(async () => {
+    treasurerToken = (await newUser({ role: 'treasurer' })).generateAuthToken();
+  });
+
+  test('remboursement total : le don passe à « remboursé » et sort des statistiques', async () => {
+    const { user, donation, payment } = await paidDonation();
+    expect((await User.findById(user._id)).totalDonations).toBe(5000);
+
+    const res = await refund(payment, { reason: 'Erreur de montant', manual: true, reference: 'OM-123' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.paymentStatus).toBe('refunded');
+
+    const u = await User.findById(user._id);
+    expect((await Payment.findById(payment._id)).status).toBe('refunded');
+    expect((await Donation.findById(donation._id)).status).toBe('refunded');
+    expect([u.totalDonations, u.donationCount]).toEqual([0, 0]);
+  });
+
+  test('remboursement partiel : le montant net reste compté, puis le solde est remboursable', async () => {
+    const { user, donation, payment } = await paidDonation();
+
+    const partial = await refund(payment, { amount: 2000, reason: 'Geste commercial', manual: true });
+    expect(partial.status).toBe(200);
+    expect(partial.body.data.paymentStatus).toBe('partially_refunded');
+
+    let u = await User.findById(user._id);
+    let d = await Donation.findById(donation._id);
+    expect([u.totalDonations, u.donationCount]).toEqual([3000, 1]);
+    expect([d.status, d.refundedAmount]).toEqual(['completed', 2000]);
+
+    // Les statistiques calculées par agrégation comptent aussi le montant net
+    const stats = await as(user.generateAuthToken(), request(app).get('/api/donations/stats'));
+    expect(stats.body.data.stats.totalAmount).toBe(3000);
+
+    const tooMuch = await refund(payment, { amount: 4000, reason: 'Trop élevé', manual: true });
+    expect(tooMuch.status).toBe(400);
+
+    const rest = await refund(payment, { reason: 'Solde restant', manual: true });
+    expect(rest.status).toBe(200);
+    u = await User.findById(user._id);
+    d = await Donation.findById(donation._id);
+    expect([u.totalDonations, u.donationCount]).toEqual([0, 0]);
+    expect(d.status).toBe('refunded');
+    expect((await Payment.findById(payment._id)).status).toBe('refunded');
+  });
+
+  test('fournisseur sans remboursement automatique : rien n\'est modifié', async () => {
+    const { user, payment } = await paidDonation();
+
+    const res = await refund(payment, { reason: 'Demande du donateur' });
+    expect(res.status).toBe(400);
+
+    const p = await Payment.findById(payment._id);
+    expect(p.status).toBe('completed');
+    expect(p.refund.amount).toBe(0);
+    expect((await User.findById(user._id)).totalDonations).toBe(5000);
+  });
+
+  test('deux remboursements simultanés ne dépassent pas le montant payé', async () => {
+    const { user, payment } = await paidDonation();
+
+    const results = await Promise.all([
+      refund(payment, { amount: 3000, reason: 'Double clic', manual: true }),
+      refund(payment, { amount: 3000, reason: 'Double clic', manual: true })
+    ]);
+
+    expect(results.map(r => r.status).sort()).toEqual([200, 409]);
+    expect((await Payment.findById(payment._id)).refund.amount).toBe(3000);
+    expect((await User.findById(user._id)).totalDonations).toBe(2000);
+  });
+
+  test('un utilisateur simple ne peut pas rembourser', async () => {
+    const { user, payment } = await paidDonation();
+    const res = await as(user.generateAuthToken(), request(app).post(`/api/payments/${payment._id}/refund`))
+      .send({ reason: 'Je veux mon argent', manual: true });
+    expect(res.status).toBe(403);
+  });
+
+  test('le montant remboursé chez Stripe / PayPal suit la conversion de l\'encaissement', () => {
+    expect(paymentService.toStripeAmount(6550, 'XOF')).toBe(1000);   // 10,00 EUR en centimes
+    expect(paymentService.toStripeAmount(10, 'EUR')).toBe(1000);
+    expect(paymentService.toPayPalAmount(6000, 'XOF')).toEqual({ value: '10.00', currency_code: 'USD' });
+    expect(paymentService.toPayPalAmount(10, 'USD')).toEqual({ value: '10.00', currency_code: 'USD' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('Modifications d\'un don par un administrateur', () => {
+  let adminToken;
+
+  beforeAll(async () => {
+    adminToken = (await newUser({ role: 'admin' })).generateAuthToken();
+  });
+
+  test('valider un don à la main : compté en XOF, reçu envoyé, une seule fois', async () => {
+    const user = await newUser();
+    const donation = await helpers.createDonation(Donation, user, { amount: 100, currency: 'EUR', paymentMethod: 'cash' });
+    const emailsBefore = helpers.emails.filter(e => e.to === user.email).length;
+    const setStatus = (status) => as(adminToken, request(app).patch(`/api/donations/${donation._id}/status`)).send({ status });
+
+    expect((await setStatus('completed')).status).toBe(200);
+    await setStatus('completed');
+
+    const u = await User.findById(user._id);
+    expect([u.totalDonations, u.donationCount]).toEqual([Math.round(100 * 655.957), 1]);
+    expect(helpers.emails.filter(e => e.to === user.email).length).toBe(emailsBefore + 1);
+
+    // Revenir en arrière retire le don des statistiques
+    expect((await setStatus('cancelled')).status).toBe(200);
+    const after = await User.findById(user._id);
+    expect([after.totalDonations, after.donationCount]).toEqual([0, 0]);
+  });
+
+  test('corriger le montant d\'un don complété ajuste le total du donateur', async () => {
+    const user = await newUser();
+    const donation = await helpers.createDonation(Donation, user);
+    const payment = await helpers.createMoneyFusionPayment(Payment, user, donation);
+    await completion.completePayment(await Payment.findById(payment._id).populate('user donation'), { source: 'test' });
+
+    const res = await as(adminToken, request(app).put(`/api/donations/${donation._id}`)).send({ amount: 8000 });
+    expect(res.status).toBe(200);
+
+    const u = await User.findById(user._id);
+    expect([u.totalDonations, u.donationCount]).toEqual([8000, 1]);
+
+    const invalid = await as(adminToken, request(app).put(`/api/donations/${donation._id}`)).send({ amount: 50 });
+    expect(invalid.status).toBe(400);
+    expect((await User.findById(user._id)).totalDonations).toBe(8000);
+  });
+
+  test('franchir un seuil par correction met à jour le niveau de partenaire', async () => {
+    const user = await newUser();
+    const donation = await helpers.createDonation(Donation, user, { amount: 200000, status: 'pending' });
+
+    await as(adminToken, request(app).patch(`/api/donations/${donation._id}/status`)).send({ status: 'completed' });
+    expect((await User.findById(user._id)).partnerLevel).toBe('classique');
+
+    await as(adminToken, request(app).put(`/api/donations/${donation._id}`)).send({ amount: 400000 });
+    expect((await User.findById(user._id)).partnerLevel).toBe('bronze');
+
+    await as(adminToken, request(app).put(`/api/donations/${donation._id}`)).send({ status: 'cancelled' });
+    expect((await User.findById(user._id)).partnerLevel).toBe('classique');
   });
 });
 

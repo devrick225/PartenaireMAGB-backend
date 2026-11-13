@@ -19,12 +19,13 @@ const toXOF = (amount, currency = 'XOF') => {
 };
 
 /**
- * Expression d'agrégation MongoDB donnant le montant d'un document en XOF.
+ * Expression d'agrégation MongoDB donnant le montant d'un document en XOF,
+ * net des remboursements partiels (champ `refundedAmount` des dons).
  * Usage : { $sum: amountInXofExpr() }
  */
 const amountInXofExpr = (amountField = '$amount', currencyField = '$currency') => ({
   $multiply: [
-    amountField,
+    { $max: [0, { $subtract: [amountField, { $ifNull: ['$refundedAmount', 0] }] }] },
     {
       $switch: {
         branches: Object.entries(RATES_TO_XOF)

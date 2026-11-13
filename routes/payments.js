@@ -61,10 +61,17 @@ const initializePaymentValidation = [
 // Validation pour le remboursement
 const refundValidation = [
   body('amount')
-    .optional()
-    .isNumeric()
-    .isFloat({ min: 0 })
+    .optional({ nullable: true })
+    .isFloat({ gt: 0 })
     .withMessage('Le montant doit être positif'),
+  body('manual')
+    .optional()
+    .isBoolean()
+    .withMessage('Le champ manual doit être un booléen'),
+  body('reference')
+    .optional()
+    .isLength({ max: 100 })
+    .withMessage('La référence ne peut pas dépasser 100 caractères'),
   body('reason')
     .notEmpty()
     .isLength({ min: 5, max: 200 })

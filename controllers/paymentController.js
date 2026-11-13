@@ -9,7 +9,13 @@ const fusionPayService = require('../services/fusionPayService');
 const moneyFusionService = require('../services/moneyFusionService');
 const paydunyaService = require('../services/paydunyaService');
 const geniusPayService = require('../services/geniusPayService');
-const { completePayment, failPayment } = require('../services/paymentCompletionService');
+const {
+  completePayment,
+  failPayment,
+  reserveRefund,
+  cancelRefundReservation,
+  finalizeRefund
+} = require('../services/paymentCompletionService');
 
 // Fonction utilitaire pour générer l'URL de callback mobile
 const generateMobileCallbackUrl = (transactionId, donationId, status = 'completed') => {
@@ -781,9 +787,26 @@ const verifyPayment = async (req, res) => {
       } else {
         // Logique pour autres fournisseurs (CinetPay, Stripe, PayPal, FusionPay)
         if (verificationResult.success) {
+          // Conserver les identifiants nécessaires à un futur remboursement
+          const providerResponse = verificationResult.data || {};
+          const providerData = {};
+          if (payment.provider === 'paypal') {
+            providerData.paypal = {
+              captureId: providerResponse.purchase_units?.[0]?.payments?.captures?.[0]?.id,
+              payerId: providerResponse.payer?.payer_id
+            };
+          } else if (payment.provider === 'stripe') {
+            providerData.stripe = {
+              chargeId: typeof providerResponse.latest_charge === 'string'
+                ? providerResponse.latest_charge
+                : providerResponse.latest_charge?.id
+            };
+          }
+
           await completePayment(payment, {
             transactionId: payment.transaction?.externalId,
-            source: `verify_${payment.provider}`
+            source: `verify_${payment.provider}`,
+            providerData
           });
 
           res.json({
@@ -849,8 +872,20 @@ const verifyPayment = async (req, res) => {
 // @access  Private (Admin/Treasurer)
 const refundPayment = async (req, res) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: errors.array()
+      });
+    }
+
     const { id } = req.params;
-    const { amount, reason } = req.body;
+    const { amount, reason, reference } = req.body;
+    // manual : le donateur a été remboursé hors plateforme (mobile money, espèces…),
+    // il s'agit seulement d'enregistrer le remboursement.
+    const manual = req.body.manual === true || req.body.manual === 'true';
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -859,9 +894,7 @@ const refundPayment = async (req, res) => {
       });
     }
 
-    const payment = await Payment.findById(id)
-      .populate('user', 'firstName lastName email')
-      .populate('donation');
+    const payment = await Payment.findById(id);
 
     if (!payment) {
       return res.status(404).json({
@@ -870,43 +903,80 @@ const refundPayment = async (req, res) => {
       });
     }
 
-    if (payment.status !== 'completed') {
+    if (!['completed', 'partially_refunded'].includes(payment.status)) {
       return res.status(400).json({
         success: false,
         error: 'Seuls les paiements complétés peuvent être remboursés'
       });
     }
 
+    const alreadyRefunded = payment.refund?.amount || 0;
+    const remaining = payment.amount - alreadyRefunded;
+    const refundAmount = amount !== undefined && amount !== null && amount !== '' ? Number(amount) : remaining;
+
+    if (!Number.isFinite(refundAmount) || refundAmount <= 0 || refundAmount > remaining) {
+      return res.status(400).json({
+        success: false,
+        error: `Montant de remboursement invalide (reste remboursable : ${remaining} ${payment.currency})`
+      });
+    }
+
+    // Réserver le montant avant d'appeler le fournisseur : deux demandes simultanées
+    // ne peuvent pas rembourser plus que le paiement.
+    const reserved = await reserveRefund(payment, refundAmount, reason);
+    if (!reserved) {
+      return res.status(409).json({
+        success: false,
+        error: 'Un remboursement est déjà en cours ou le montant dépasse le reste remboursable'
+      });
+    }
+
+    let refundResult;
     try {
-      const refundResult = await paymentService.processRefund(payment, amount, reason);
-
-      if (refundResult.success) {
-        // Initier le remboursement
-        await payment.initiateRefund(amount || payment.amount, reason);
-
-        res.json({
-          success: true,
-          message: 'Remboursement initié avec succès',
-          data: {
-            refundId: refundResult.refundId,
-            amount: refundResult.amount,
-            status: refundResult.status
-          }
-        });
+      if (manual) {
+        refundResult = { success: true, refundId: reference || `MANUAL-${Date.now()}`, status: 'completed' };
       } else {
-        res.status(400).json({
-          success: false,
-          error: 'Erreur lors du remboursement'
-        });
+        const isFullRefund = alreadyRefunded === 0 && refundAmount === payment.amount;
+        // Remboursement total : laisser le fournisseur rembourser exactement ce qu'il a débité
+        refundResult = await paymentService.processRefund(payment, isFullRefund ? undefined : refundAmount, reason);
       }
-
     } catch (refundError) {
+      await cancelRefundReservation(payment, refundAmount);
       console.error('Erreur remboursement:', refundError);
-      res.status(500).json({
+      return res.status(400).json({
         success: false,
         error: `Erreur lors du remboursement: ${refundError.message}`
       });
     }
+
+    if (!refundResult?.success) {
+      await cancelRefundReservation(payment, refundAmount);
+      return res.status(400).json({
+        success: false,
+        error: 'Erreur lors du remboursement'
+      });
+    }
+
+    const outcome = await finalizeRefund(reserved, refundAmount, {
+      reason,
+      refundId: refundResult.refundId,
+      performedBy: req.user._id,
+      manual
+    });
+
+    res.json({
+      success: true,
+      message: manual ? 'Remboursement manuel enregistré' : 'Remboursement effectué avec succès',
+      data: {
+        refundId: refundResult.refundId,
+        amount: refundAmount,
+        currency: payment.currency,
+        status: refundResult.status,
+        paymentStatus: outcome.paymentStatus,
+        donationStatus: outcome.donationStatus,
+        totalRefunded: outcome.totalRefunded
+      }
+    });
 
   } catch (error) {
     console.error('Erreur refundPayment:', error);

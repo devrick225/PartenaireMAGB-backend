@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const Donation = require('../models/Donation');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
-const emailService = require('../services/emailService');
+const { applyDonationChange } = require('../services/donationAdminService');
 
 // @desc    Obtenir la liste des dons de l'utilisateur
 // @route   GET /api/donations
@@ -480,7 +480,7 @@ const updateDonation = async (req, res) => {
     }
 
     // Whitelist des champs modifiables — empêche le mass assignment
-    const ALLOWED_FIELDS = ['amount', 'currency', 'category', 'message', 'isAnonymous', 'status', 'notes'];
+    const ALLOWED_FIELDS = ['amount', 'currency', 'category', 'message', 'isAnonymous', 'status'];
     const updates = {};
     ALLOWED_FIELDS.forEach(field => {
       if (req.body[field] !== undefined) {
@@ -495,11 +495,7 @@ const updateDonation = async (req, res) => {
       });
     }
 
-    const donation = await Donation.findByIdAndUpdate(
-      id,
-      updates,
-      { new: true, runValidators: true }
-    );
+    const donation = await Donation.findById(id);
 
     if (!donation) {
       return res.status(404).json({
@@ -508,9 +504,9 @@ const updateDonation = async (req, res) => {
       });
     }
 
-    // Ajouter à l'historique
-    donation.addToHistory('updated', 'Don modifié par un administrateur', req.user.id, updates);
-    await donation.save();
+    // Applique la modification et répercute l'écart (montant, statut) sur les
+    // statistiques du donateur ; envoie le reçu si le don devient complété.
+    await applyDonationChange(donation, updates, { performedBy: req.user._id });
 
     res.json({
       success: true,
@@ -521,6 +517,14 @@ const updateDonation = async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur updateDonation:', error);
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        error: Object.values(error.errors).map(e => e.message).join(', ')
+      });
+    }
+
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la modification du don'
@@ -600,7 +604,7 @@ const updateDonationStatus = async (req, res) => {
       });
     }
 
-    const donation = await Donation.findById(id).populate('user');
+    const donation = await Donation.findById(id);
 
     if (!donation) {
       return res.status(404).json({
@@ -610,36 +614,22 @@ const updateDonationStatus = async (req, res) => {
     }
 
     // Vérifier les permissions - utilisateur propriétaire ou admin
-    if (donation.user._id.toString() !== req.user.id && !['admin', 'moderator', 'treasurer'].includes(req.user.role)) {
+    if (donation.user.toString() !== req.user.id && !['admin', 'moderator', 'treasurer'].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         error: 'Accès non autorisé à cette donation'
       });
     }
 
-    const oldStatus = donation.status;
-    
-    // Mettre à jour le statut
-    donation.status = status;
-    
-    // Ajouter à l'historique
-    const historyDescription = updatedFrom === 'payment_verification' 
-      ? `Statut mis à jour via vérification de paiement (${paymentStatus} -> ${status})`
-      : `Statut mis à jour: ${oldStatus} -> ${status}`;
-      
-    donation.addToHistory('updated', historyDescription, req.user.id, {
-      oldStatus,
-      newStatus: status,
-      updatedFrom: updatedFrom || 'manual',
-      paymentStatus
+    // Applique le statut et répercute l'écart sur les statistiques du donateur
+    // (montant converti en XOF, ajout comme retrait) ; envoie le reçu si le don devient complété.
+    const { oldStatus } = await applyDonationChange(donation, { status }, {
+      performedBy: req.user._id,
+      description: updatedFrom === 'payment_verification'
+        ? `Statut mis à jour via vérification de paiement (${paymentStatus} -> ${status})`
+        : `Statut mis à jour: ${donation.status} -> ${status}`,
+      metadata: { updatedFrom: updatedFrom || 'manual', paymentStatus }
     });
-
-    await donation.save();
-
-    // Mettre à jour les statistiques utilisateur si nécessaire
-    if (status === 'completed' && oldStatus !== 'completed') {
-      await donation.user.updateDonationStats(donation.amount);
-    }
 
     res.json({
       success: true,

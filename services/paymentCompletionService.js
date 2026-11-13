@@ -220,9 +220,114 @@ const failPayment = async (payment, reason, { code = null, status = 'failed', so
   return { changed: true };
 };
 
+/**
+ * Remboursements — en trois temps pour qu'un double clic ne rembourse pas deux fois :
+ *   1. reserveRefund : réserve le montant de façon atomique (refusé s'il dépasse le reste dû) ;
+ *   2. l'appelant rembourse chez le fournisseur ;
+ *   3. finalizeRefund (succès) ou cancelRefundReservation (échec du fournisseur).
+ */
+const reserveRefund = async (payment, amount, reason) => {
+  return Payment.findOneAndUpdate(
+    {
+      _id: payment._id,
+      status: { $in: ['completed', 'partially_refunded'] },
+      $expr: { $lte: [{ $add: [{ $ifNull: ['$refund.amount', 0] }, amount] }, '$amount'] }
+    },
+    {
+      $inc: { 'refund.amount': amount },
+      $set: { 'refund.status': 'pending', 'refund.reason': reason }
+    },
+    { new: true }
+  );
+};
+
+const cancelRefundReservation = async (payment, amount) => {
+  await Payment.updateOne(
+    { _id: payment._id },
+    { $inc: { 'refund.amount': -amount }, $set: { 'refund.status': 'failed' } }
+  );
+};
+
+/**
+ * Enregistrer un remboursement effectué : statut du paiement, montant remboursé
+ * du don et retrait des statistiques du donateur.
+ *
+ * @returns {{ paymentStatus, donationStatus, totalRefunded }}
+ */
+const finalizeRefund = async (reservedPayment, amount, { reason, refundId, performedBy = null, manual = false } = {}) => {
+  const totalRefunded = reservedPayment.refund?.amount || amount;
+  const paymentStatus = totalRefunded >= reservedPayment.amount ? 'refunded' : 'partially_refunded';
+  const now = new Date();
+
+  await Payment.updateOne(
+    { _id: reservedPayment._id },
+    {
+      $set: {
+        status: paymentStatus,
+        'refund.status': 'completed',
+        'refund.refundedAt': now,
+        'refund.refundId': refundId
+      },
+      $push: {
+        history: {
+          action: 'refunded',
+          description: `Remboursement ${manual ? 'manuel ' : ''}de ${amount} ${reservedPayment.currency}`,
+          performedBy,
+          performedAt: now,
+          metadata: { refundAmount: amount, reason, refundId, manual }
+        }
+      }
+    }
+  );
+
+  let donationStatus = null;
+  const donationId = idOf(reservedPayment.donation);
+  const donation = donationId ? await Donation.findById(donationId) : null;
+
+  // Seul un don compté (complété) est à retirer des statistiques
+  if (donation && donation.status === 'completed') {
+    const newRefunded = Math.min((donation.refundedAmount || 0) + amount, donation.amount);
+    const fullyRefunded = newRefunded >= donation.amount;
+
+    const claim = await Donation.updateOne(
+      { _id: donation._id, status: 'completed', refundedAmount: donation.refundedAmount || 0 },
+      {
+        $set: { refundedAmount: newRefunded, ...(fullyRefunded ? { status: 'refunded' } : {}) },
+        $push: {
+          history: {
+            action: 'refunded',
+            description: fullyRefunded ? 'Don remboursé' : `Don partiellement remboursé (${amount} ${donation.currency})`,
+            performedBy,
+            performedAt: now,
+            metadata: { paymentId: reservedPayment._id, refundAmount: amount, reason }
+          }
+        }
+      }
+    );
+
+    donationStatus = fullyRefunded ? 'refunded' : 'completed';
+
+    if (claim.modifiedCount === 1) {
+      try {
+        const user = await User.findById(idOf(reservedPayment.user));
+        if (user) await user.applyDonationDelta(-toXOF(amount, donation.currency), fullyRefunded ? -1 : 0);
+      } catch (statsError) {
+        console.error(`❌ Erreur retrait stats donateur (paiement ${reservedPayment._id}):`, statsError.message);
+      }
+    }
+  } else if (donation) {
+    donationStatus = donation.status;
+  }
+
+  return { paymentStatus, donationStatus, totalRefunded };
+};
+
 module.exports = {
   completePayment,
   failPayment,
+  reserveRefund,
+  cancelRefundReservation,
+  finalizeRefund,
   FINAL_PAID_STATUSES,
   PROVIDER_LABELS
 };

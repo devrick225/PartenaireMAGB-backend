@@ -296,7 +296,7 @@ class PaymentService {
       }
 
       // Stripe ne supporte pas XOF - convertir en EUR (1 EUR ≈ 655 XOF)
-      const stripeAmount = currency === 'XOF' ? Math.round((amount / 655) * 100) : Math.round(amount * 100);
+      const stripeAmount = this.toStripeAmount(amount, currency);
       const stripeCurrency = currency === 'XOF' ? 'eur' : currency.toLowerCase();
 
       // Créer le Payment Intent
@@ -363,8 +363,7 @@ class PaymentService {
       const { amount, currency, donationId, callbackUrl } = paymentData;
 
       // PayPal ne supporte pas XOF - convertir en USD (1 USD ≈ 600 XOF)
-      const paypalAmount = currency === 'XOF' ? (amount / 600).toFixed(2) : amount.toString();
-      const paypalCurrency = currency === 'XOF' ? 'USD' : currency;
+      const { value: paypalAmount, currency_code: paypalCurrency } = this.toPayPalAmount(amount, currency);
 
       // Obtenir le token d'accès PayPal
       const accessToken = await this.getPayPalAccessToken();
@@ -627,6 +626,19 @@ class PaymentService {
   // UTILITY METHODS
   // ================================
 
+  // Montant tel qu'il est débité chez Stripe (centimes ; les XOF sont encaissés en EUR).
+  // Utilisé à l'encaissement ET au remboursement pour que les deux correspondent.
+  toStripeAmount(amount, currency) {
+    return currency === 'XOF' ? Math.round((amount / 655) * 100) : Math.round(amount * 100);
+  }
+
+  // Montant tel qu'il est débité chez PayPal (les XOF sont encaissés en USD)
+  toPayPalAmount(amount, currency) {
+    return currency === 'XOF'
+      ? { value: (amount / 600).toFixed(2), currency_code: 'USD' }
+      : { value: Number(amount).toFixed(2), currency_code: currency };
+  }
+
   generateTransactionId() {
     const timestamp = Date.now().toString(36);
     const random = crypto.randomBytes(8).toString('hex');
@@ -643,7 +655,7 @@ class PaymentService {
         case 'cinetpay':
           return await this.processCinetPayRefund(payment, amount, reason);
         default:
-          throw new Error(`Remboursement non supporté pour ${payment.provider}`);
+          throw new Error(`Remboursement automatique non supporté pour ${payment.provider} : remboursez le donateur directement puis enregistrez-le comme remboursement manuel`);
       }
     } catch (error) {
       console.error('Erreur remboursement:', error);
@@ -651,11 +663,17 @@ class PaymentService {
     }
   }
 
+  // `amount` est exprimé dans la devise du don ; absent = remboursement total
   async processStripeRefund(payment, amount, reason) {
     try {
+      if (!payment.stripe?.paymentIntentId) {
+        throw new Error('PaymentIntent Stripe introuvable pour ce paiement');
+      }
+
       const refund = await stripe.refunds.create({
         payment_intent: payment.stripe.paymentIntentId,
-        amount: amount ? Math.round(amount * 100) : undefined,
+        // Convertir comme à l'encaissement (un don en XOF a été débité en EUR)
+        amount: amount ? this.toStripeAmount(amount, payment.currency) : undefined,
         reason: 'requested_by_customer',
         metadata: {
           reason: reason,
@@ -667,23 +685,26 @@ class PaymentService {
         success: true,
         refundId: refund.id,
         status: refund.status,
-        amount: refund.amount / 100
+        amount: amount || payment.amount
       };
     } catch (error) {
       throw new Error(`Stripe Refund Error: ${error.message}`);
     }
   }
 
+  // `amount` est exprimé dans la devise du don ; absent = remboursement total
   async processPayPalRefund(payment, amount, reason) {
     try {
+      const captureId = payment.paypal?.captureId;
+      if (!captureId) {
+        throw new Error('Identifiant de capture PayPal introuvable pour ce paiement');
+      }
+
       const accessToken = await this.getPayPalAccessToken();
-      const captureId = payment.paypal.captureId;
 
       const refundData = {
-        amount: amount ? {
-          value: amount.toString(),
-          currency_code: payment.currency
-        } : undefined,
+        // Convertir comme à l'encaissement (un don en XOF a été débité en USD)
+        amount: amount ? this.toPayPalAmount(amount, payment.currency) : undefined,
         note_to_payer: reason
       };
 
@@ -702,7 +723,7 @@ class PaymentService {
         success: true,
         refundId: response.data.id,
         status: response.data.status,
-        amount: parseFloat(response.data.amount.value)
+        amount: amount || payment.amount
       };
     } catch (error) {
       throw new Error(`PayPal Refund Error: ${error.message}`);
