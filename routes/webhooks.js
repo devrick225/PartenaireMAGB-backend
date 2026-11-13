@@ -7,14 +7,27 @@ const fusionPayService = require('../services/fusionPayService');
 const moneyFusionService = require('../services/moneyFusionService');
 const paydunyaService = require('../services/paydunyaService');
 const geniusPayService = require('../services/geniusPayService');
-const emailService = require('../services/emailService');
 const websocketService = require('../services/websocketService');
+const { completePayment, failPayment } = require('../services/paymentCompletionService');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Middleware pour parser le body en raw pour les webhooks
-const rawBodyParser = express.raw({ type: 'application/json' });
+// Middleware fournissant le body brut (Buffer) aux webhooks signés.
+// Le parser JSON global de server.js a déjà consommé le flux : express.raw() ne
+// verrait plus rien et req.body serait un objet (la vérification de signature
+// échouait donc systématiquement). server.js conserve le body brut dans req.rawBody.
+const rawJsonParser = express.raw({ type: 'application/json' });
+const rawBodyParser = (req, res, next) => {
+  if (Buffer.isBuffer(req.rawBody)) {
+    req.body = req.rawBody;
+    return next();
+  }
+  return rawJsonParser(req, res, next);
+};
+
+// Statuts à partir desquels un paiement peut encore passer « en traitement »
+const canMoveToProcessing = (payment) => payment.status === 'pending';
 
 // @desc    Webhook CinetPay
 // @route   POST /api/webhooks/cinetpay
@@ -95,96 +108,72 @@ router.post('/cinetpay', express.json(), async (req, res) => {
 
     switch (cpm_trans_status.toUpperCase()) {
       case 'ACCEPTED':
-      case 'COMPLETED':
-        if (payment.status !== 'completed') {
-          console.log('✅ Paiement CinetPay accepté:', cpm_trans_id);
-          
-          // Marquer le paiement comme complété
-          await payment.markCompleted({
+      case 'COMPLETED': {
+        // La notification n'est qu'un signal : le statut réel est relu auprès de CinetPay
+        // (la signature est optionnelle et l'identifiant de transaction est connu du payeur).
+        const check = await paymentService.verifyCinetPayPayment(cpm_trans_id);
+        if (!check.success) {
+          console.warn('⚠️ Paiement CinetPay non confirmé par l\'API de vérification:', cpm_trans_id, check.message || check.status);
+          return res.status(200).json({
+            success: false,
+            error: 'Paiement non confirmé par CinetPay'
+          });
+        }
+
+        console.log('✅ Paiement CinetPay accepté:', cpm_trans_id);
+
+        const paidAt = new Date(`${cpm_payment_date} ${cpm_payment_time}`);
+        const result = await completePayment(payment, {
+          transactionId: cpm_trans_id,
+          source: 'webhook_cinetpay',
+          providerData: {
             cinetpay: {
-              ...payment.cinetpay,
               paymentId: cpm_payid,
               status: 'accepted',
               paymentDate: cpm_payment_date,
               paymentTime: cpm_payment_time,
-              amount: parseFloat(cpm_amount),
+              amount: Number.isFinite(parseFloat(cpm_amount)) ? parseFloat(cpm_amount) : undefined,
               currency: cpm_currency,
               paymentConfig: cpm_payment_config,
-              completedAt: new Date(`${cpm_payment_date} ${cpm_payment_time}`),
+              completedAt: isNaN(paidAt.getTime()) ? new Date() : paidAt,
               apiResponse: payload
             }
-          });
-
-          // Mettre à jour la donation
-          payment.donation.status = 'completed';
-          await payment.donation.save();
-
-          // Mettre à jour les statistiques utilisateur
-          await payment.user.updateDonationStats(payment.amount);
-
-          // Envoyer le reçu par email
-          try {
-            await emailService.sendDonationReceiptEmail(
-              payment.user.email,
-              payment.user.firstName,
-              {
-                receiptNumber: payment.donation.receipt.number,
-                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
-                formattedAmount: payment.formattedAmount,
-                donationDate: payment.donation.createdAt,
-                paymentMethod: 'CinetPay',
-                category: payment.donation.category,
-                transactionId: cpm_trans_id,
-                paymentId: cpm_payid
-              }
-            );
-          } catch (emailError) {
-            console.error('❌ Erreur envoi reçu CinetPay:', emailError);
           }
-
-          statusUpdated = true;
-        }
+        });
+        statusUpdated = !result.alreadyCompleted;
         break;
+      }
 
       case 'REFUSED':
       case 'CANCELLED':
-      case 'FAILED':
-        if (payment.status !== 'failed') {
-          console.log('❌ Paiement CinetPay refusé:', cpm_trans_id);
-          
-          await payment.markFailed(
-            cpm_error_message || cpm_trans_status_label || 'Paiement refusé par CinetPay',
-            cpm_result || 'REFUSED'
-          );
+      case 'FAILED': {
+        console.log('❌ Paiement CinetPay refusé:', cpm_trans_id);
 
-          // Mettre à jour les données CinetPay
-          payment.cinetpay = {
-            ...payment.cinetpay,
-            paymentId: cpm_payid,
-            status: 'refused',
-            errorMessage: cpm_error_message,
-            failedAt: new Date(),
-            apiResponse: payload
-          };
-          
-          await payment.save();
-          statusUpdated = true;
-        }
+        payment.set('cinetpay.paymentId', cpm_payid);
+        payment.set('cinetpay.status', 'refused');
+        payment.set('cinetpay.errorMessage', cpm_error_message);
+        payment.set('cinetpay.failedAt', new Date());
+        payment.set('cinetpay.apiResponse', payload);
+
+        const result = await failPayment(
+          payment,
+          cpm_error_message || cpm_trans_status_label || 'Paiement refusé par CinetPay',
+          { code: cpm_result || 'REFUSED', source: 'webhook_cinetpay' }
+        );
+        statusUpdated = result.changed;
         break;
+      }
 
       case 'PENDING':
       case 'WAITING':
-        if (payment.status !== 'processing') {
+        if (canMoveToProcessing(payment)) {
           console.log('⏳ Paiement CinetPay en attente:', cpm_trans_id);
           
           payment.status = 'processing';
-          payment.cinetpay = {
-            ...payment.cinetpay,
-            paymentId: cpm_payid,
-            status: 'pending',
-            pendingAt: new Date(),
-            apiResponse: payload
-          };
+          payment.set('cinetpay.paymentId', cpm_payid);
+          payment.set('cinetpay.status', 'pending');
+          payment.set('cinetpay.pendingAt', new Date());
+          payment.set('cinetpay.apiResponse', payload);
           
           payment.addToHistory('processing', 'Paiement en cours de traitement via CinetPay');
           await payment.save();
@@ -196,13 +185,9 @@ router.post('/cinetpay', express.json(), async (req, res) => {
         console.warn('⚠️ Statut CinetPay non géré:', cpm_trans_status);
         
         // Sauvegarder quand même les données pour debug
-        payment.cinetpay = {
-          ...payment.cinetpay,
-          paymentId: cpm_payid,
-          status: cpm_trans_status.toLowerCase(),
-          unknownStatusAt: new Date(),
-          apiResponse: payload
-        };
+        payment.set('cinetpay.paymentId', cpm_payid);
+        payment.set('cinetpay.status', cpm_trans_status.toLowerCase());
+        payment.set('cinetpay.apiResponse', payload);
         await payment.save();
     }
 
@@ -305,22 +290,68 @@ router.post('/stripe', rawBodyParser, async (req, res) => {
     const event = verification.event;
     console.log('Stripe webhook received:', event.type);
 
-    // Traiter selon le type d'événement
+    const object = event.data.object;
+    const findStripePayment = (paymentIntentId) => paymentIntentId
+      ? Payment.findOne({ 'stripe.paymentIntentId': paymentIntentId, provider: 'stripe' }).populate('user donation')
+      : null;
+
+    // Traiter selon le type d'événement (la signature a été vérifiée : l'événement vient bien de Stripe)
     switch (event.type) {
-      case 'payment_intent.succeeded':
-        // TODO: Marquer le paiement comme réussi
-        console.log('Payment succeeded:', event.data.object.id);
+      case 'payment_intent.succeeded': {
+        const payment = await findStripePayment(object.id);
+        if (!payment) {
+          console.error('Paiement non trouvé pour PaymentIntent Stripe:', object.id);
+          break;
+        }
+        payment.addWebhook('stripe', event.type, event.id, { id: object.id, status: object.status }, signature);
+        await completePayment(payment, {
+          transactionId: object.id,
+          source: 'webhook_stripe',
+          providerData: {
+            stripe: {
+              chargeId: typeof object.latest_charge === 'string' ? object.latest_charge : object.latest_charge?.id,
+              paymentMethodId: typeof object.payment_method === 'string' ? object.payment_method : object.payment_method?.id
+            }
+          }
+        });
+        console.log('Paiement Stripe complété:', object.id);
         break;
-      
+      }
+
       case 'payment_intent.payment_failed':
-        // TODO: Marquer le paiement comme échoué
-        console.log('Payment failed:', event.data.object.id);
+      case 'payment_intent.canceled': {
+        const payment = await findStripePayment(object.id);
+        if (!payment) break;
+        payment.addWebhook('stripe', event.type, event.id, { id: object.id, status: object.status }, signature);
+        await failPayment(
+          payment,
+          object.last_payment_error?.message || (event.type === 'payment_intent.canceled' ? 'Paiement annulé' : 'Paiement refusé par Stripe'),
+          {
+            status: event.type === 'payment_intent.canceled' ? 'cancelled' : 'failed',
+            code: object.last_payment_error?.code,
+            source: 'webhook_stripe'
+          }
+        );
+        console.log('Paiement Stripe échoué:', object.id);
         break;
-      
-      case 'charge.dispute.created':
-        // TODO: Gérer la contestation
-        console.log('Dispute created:', event.data.object.id);
+      }
+
+      case 'charge.dispute.created': {
+        // Contestation bancaire : à traiter manuellement par la trésorerie
+        const payment = await findStripePayment(
+          typeof object.payment_intent === 'string' ? object.payment_intent : object.payment_intent?.id
+        );
+        console.warn('⚠️ Contestation Stripe ouverte:', object.id, 'paiement:', payment?._id);
+        if (payment) {
+          payment.addToHistory('info', 'Contestation Stripe ouverte', null, {
+            disputeId: object.id,
+            reason: object.reason,
+            amount: object.amount
+          });
+          await payment.save();
+        }
         break;
+      }
       
       default:
         console.log('Unhandled Stripe event type:', event.type);
@@ -343,33 +374,72 @@ router.post('/stripe', rawBodyParser, async (req, res) => {
 // POST /api/webhooks/paypal - Webhook PayPal
 router.post('/paypal', express.json(), async (req, res) => {
   try {
-    const payload = req.body;
-    const headers = req.headers;
+    const payload = req.body || {};
+    const resource = payload.resource || {};
 
     console.log('PayPal webhook received:', payload.event_type);
 
-    // TODO: Vérifier la signature PayPal si nécessaire
-    // PayPal utilise un système de vérification différent
+    // Signature vérifiée auprès de PayPal quand PAYPAL_WEBHOOK_ID est configuré
+    const verified = await paymentService.verifyPayPalWebhook(req.headers, payload);
+    if (verified === false) {
+      console.error('❌ Signature webhook PayPal invalide');
+      return res.status(401).json({ success: false, error: 'Invalid signature' });
+    }
 
-    // Traiter selon le type d'événement
+    // Identifiant de la commande selon le type d'événement
+    const orderId = payload.event_type?.startsWith('CHECKOUT.ORDER')
+      ? resource.id
+      : resource.supplementary_data?.related_ids?.order_id;
+
+    const payment = orderId
+      ? await Payment.findOne({ 'paypal.orderId': orderId, provider: 'paypal' }).populate('user donation')
+      : null;
+
+    if (!payment) {
+      console.warn('Paiement non trouvé pour webhook PayPal:', payload.event_type, orderId);
+      return res.status(200).json({ success: false, message: 'Paiement non trouvé, ignoré' });
+    }
+
+    payment.addWebhook('paypal', payload.event_type, payload.id, { resourceId: resource.id, status: resource.status });
+
     switch (payload.event_type) {
       case 'CHECKOUT.ORDER.APPROVED':
-        // TODO: Capturer le paiement
-        console.log('PayPal order approved:', payload.resource.id);
+      case 'PAYMENT.CAPTURE.COMPLETED': {
+        // Dans tous les cas on relit la commande chez PayPal avant de valider le don
+        // (et on la capture si le payeur vient seulement de l'approuver).
+        let order = await paymentService.getPayPalOrder(orderId);
+        if (order.status === 'APPROVED') {
+          const capture = await paymentService.capturePayPalPayment(orderId);
+          order = capture.data || order;
+        }
+
+        if (order.status !== 'COMPLETED') {
+          console.warn('⚠️ Commande PayPal non finalisée:', orderId, order.status);
+          await payment.save();
+          break;
+        }
+
+        await completePayment(payment, {
+          transactionId: orderId,
+          source: 'webhook_paypal',
+          providerData: {
+            paypal: {
+              captureId: order.purchase_units?.[0]?.payments?.captures?.[0]?.id,
+              payerId: order.payer?.payer_id
+            }
+          }
+        });
+        console.log('Paiement PayPal complété:', orderId);
         break;
-      
-      case 'PAYMENT.CAPTURE.COMPLETED':
-        // TODO: Marquer le paiement comme complété
-        console.log('PayPal payment completed:', payload.resource.id);
-        break;
-      
+      }
+
       case 'PAYMENT.CAPTURE.DENIED':
-        // TODO: Marquer le paiement comme refusé
-        console.log('PayPal payment denied:', payload.resource.id);
+        await failPayment(payment, 'Paiement refusé par PayPal', { code: 'CAPTURE_DENIED', source: 'webhook_paypal' });
         break;
-      
+
       default:
         console.log('Unhandled PayPal event type:', payload.event_type);
+        await payment.save();
     }
 
     res.status(200).json({
@@ -378,53 +448,7 @@ router.post('/paypal', express.json(), async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error processing PayPal webhook:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-// POST /api/webhooks/orange-money - Webhook Orange Money
-router.post('/orange-money', express.json(), async (req, res) => {
-  try {
-    const payload = req.body;
-    
-    console.log('Orange Money webhook received:', payload);
-
-    // TODO: Implémenter la vérification et le traitement Orange Money
-    
-    res.status(200).json({
-      success: true,
-      message: 'Webhook processed successfully'
-    });
-
-  } catch (error) {
-    console.error('Error processing Orange Money webhook:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-// POST /api/webhooks/mtn-mobile-money - Webhook MTN Mobile Money
-router.post('/mtn-mobile-money', express.json(), async (req, res) => {
-  try {
-    const payload = req.body;
-    
-    console.log('MTN Mobile Money webhook received:', payload);
-
-    // TODO: Implémenter la vérification et le traitement MTN Mobile Money
-    
-    res.status(200).json({
-      success: true,
-      message: 'Webhook processed successfully'
-    });
-
-  } catch (error) {
-    console.error('Error processing MTN Mobile Money webhook:', error);
+    console.error('Error processing PayPal webhook:', error.message);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -474,103 +498,62 @@ router.post('/moneyfusion', express.json(), async (req, res) => {
     payment.addWebhook('moneyfusion', webhookResult.type, webhookResult.data?.reference || payload.tokenPay, payload);
 
     switch (webhookResult.type) {
-      case 'payment_completed':
-        if (payment.status !== 'completed') {
-          console.log('✅ Paiement MoneyFusion complété:', webhookResult.transactionId);
+      case 'payment_completed': {
+        // Le webhook MoneyFusion n'est pas signé et le token figure dans l'URL de paiement :
+        // n'importe qui pourrait poster un faux « completed ». On relit donc le statut
+        // auprès de MoneyFusion avant de valider le don.
+        const confirmation = await moneyFusionService.confirmPaid(webhookResult.transactionId);
 
-          await payment.markCompleted({
+        if (!confirmation.confirmed) {
+          console.warn(
+            '⚠️ Webhook MoneyFusion "completed" non confirmé par l\'API MoneyFusion:',
+            webhookResult.transactionId,
+            confirmation.statut || confirmation.error
+          );
+          // 200 pour éviter les retries ; le paiement reste en attente et sera
+          // rattrapé par /payments/:id/verify ou par la tâche cron.
+          return res.status(200).json({
+            success: false,
+            message: 'Paiement non confirmé par MoneyFusion'
+          });
+        }
+
+        console.log('✅ Paiement MoneyFusion complété:', webhookResult.transactionId);
+
+        await completePayment(payment, {
+          transactionId: webhookResult.transactionId,
+          source: 'webhook_moneyfusion',
+          providerData: {
             moneyfusion: {
-              ...payment.moneyfusion,
               status: 'paid',
-              transactionReference: webhookResult.data?.reference,
+              transactionReference: webhookResult.data?.reference || confirmation.data?.numeroTransaction,
               completedAt: new Date(),
-              fees: { amount: webhookResult.data?.fees, currency: payment.currency },
-              paymentMethod: webhookResult.data?.paymentMethod,
+              fees: { amount: webhookResult.data?.fees || 0, currency: payment.currency },
+              paymentMethod: webhookResult.data?.paymentMethod || confirmation.data?.moyen,
               apiResponse: payload
             }
-          });
-
-          // Lier le paiement à la donation et mettre à jour son statut
-          if (payment.donation) {
-            payment.donation.status = 'completed';
-            payment.donation.payment = payment._id; // Lier le paiement
-            payment.donation.addToHistory('completed', 'Don complété via paiement MoneyFusion', null, {
-              paymentId: payment._id,
-              transactionId: webhookResult.transactionId,
-              amount: webhookResult.data?.amount
-            });
-            await payment.donation.save();
           }
-
-          if (payment.user) {
-            await payment.user.updateDonationStats(payment.amount);
-          }
-
-          try {
-            websocketService.notifyPaymentCompleted(payment, payment.donation);
-          } catch (wsErr) {
-            console.warn('⚠️ WebSocket notifyPaymentCompleted:', wsErr.message);
-          }
-
-          try {
-            await emailService.sendDonationReceiptEmail(
-              payment.user.email,
-              payment.user.firstName,
-              {
-                receiptNumber: payment.donation.receipt.number,
-                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
-                formattedAmount: payment.formattedAmount,
-                donationDate: payment.donation.createdAt,
-                paymentMethod: 'MoneyFusion',
-                category: payment.donation.category,
-                transactionId: webhookResult.transactionId
-              }
-            );
-          } catch (emailError) {
-            console.error('❌ Erreur envoi reçu MoneyFusion:', emailError);
-          }
-        }
+        });
         break;
+      }
 
       case 'payment_failed':
-        if (payment.status !== 'failed') {
-          console.log('❌ Paiement MoneyFusion échoué:', webhookResult.transactionId);
+        console.log('❌ Paiement MoneyFusion échoué:', webhookResult.transactionId);
 
-          await payment.markFailed(
-            webhookResult.data?.originalStatus || 'Paiement refusé par MoneyFusion',
-            'PAYMENT_FAILED'
-          );
-
-          if (payment.donation && payment.donation.status !== 'failed') {
-            payment.donation.status = 'failed';
-            payment.donation.addToHistory('failed', 'Don échoué suite au paiement MoneyFusion', null, {
-              paymentId: payment._id,
-              reason: webhookResult.data?.originalStatus
-            });
-            await payment.donation.save();
-          }
-
-          try {
-            websocketService.notifyPaymentFailed(payment, payment.donation, {
-              message: webhookResult.data?.originalStatus || 'Paiement échoué',
-              code: 'PAYMENT_FAILED'
-            });
-          } catch (wsErr) {
-            console.warn('⚠️ WebSocket notifyPaymentFailed:', wsErr.message);
-          }
-        }
+        await failPayment(
+          payment,
+          webhookResult.data?.originalStatus || 'Paiement refusé par MoneyFusion',
+          { code: 'PAYMENT_FAILED', source: 'webhook_moneyfusion' }
+        );
         break;
 
       case 'payment_pending':
-        if (!['processing', 'completed'].includes(payment.status)) {
+        if (canMoveToProcessing(payment)) {
           console.log('⏳ Paiement MoneyFusion en attente:', webhookResult.transactionId);
 
           payment.status = 'processing';
-          payment.moneyfusion = {
-            ...payment.moneyfusion,
-            status: 'pending',
-            metadata: webhookResult.data
-          };
+          payment.set('moneyfusion.status', 'pending');
+          payment.set('moneyfusion.metadata', webhookResult.data);
           payment.addToHistory('processing', 'Paiement en cours de traitement via MoneyFusion');
           await payment.save();
 
@@ -583,17 +566,11 @@ router.post('/moneyfusion', express.json(), async (req, res) => {
         break;
 
       case 'payment_cancelled':
-        if (!['cancelled', 'completed'].includes(payment.status)) {
-          payment.status = 'cancelled';
-          payment.addToHistory('cancelled', 'Paiement annulé via MoneyFusion');
-          await payment.save();
-
-          if (payment.donation && !['completed', 'cancelled'].includes(payment.donation.status)) {
-            payment.donation.status = 'failed';
-            payment.donation.addToHistory('failed', 'Don annulé suite au paiement MoneyFusion');
-            await payment.donation.save();
-          }
-        }
+        await failPayment(payment, 'Paiement annulé via MoneyFusion', {
+          status: 'cancelled',
+          code: 'PAYMENT_CANCELLED',
+          source: 'webhook_moneyfusion'
+        });
         break;
 
       default:
@@ -670,58 +647,31 @@ router.post('/fusionpay', rawBodyParser, async (req, res) => {
     // Traiter selon le type d'événement
     switch (webhookResult.type) {
       case 'payment_completed':
-        if (payment.status !== 'completed') {
-          // Marquer le paiement comme complété
-          await payment.markCompleted({
+        await completePayment(payment, {
+          transactionId: webhookResult.transactionId,
+          source: 'webhook_fusionpay',
+          providerData: {
             fusionpay: {
-              ...payment.fusionpay,
               status: 'completed',
               completedAt: new Date(),
               metadata: webhookResult.data
             }
-          });
-
-          // Mettre à jour la donation
-          payment.donation.status = 'completed';
-          await payment.donation.save();
-
-          // Mettre à jour les statistiques utilisateur
-          await payment.user.updateDonationStats(payment.amount);
-
-          // Envoyer le reçu par email
-          try {
-            await emailService.sendDonationReceiptEmail(
-              payment.user.email,
-              payment.user.firstName,
-              {
-                receiptNumber: payment.donation.receipt.number,
-                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
-                formattedAmount: payment.formattedAmount,
-                donationDate: payment.donation.createdAt,
-                paymentMethod: payment.paymentMethod,
-                category: payment.donation.category
-              }
-            );
-          } catch (emailError) {
-            console.error('Erreur envoi reçu par email:', emailError);
           }
-
-          console.log(`Paiement FusionPay complété: ${payment._id}`);
-        }
+        });
+        console.log(`Paiement FusionPay complété: ${payment._id}`);
         break;
 
       case 'payment_failed':
-        if (payment.status !== 'failed') {
-          await payment.markFailed(
-            webhookResult.data.failure_reason || 'Paiement échoué',
-            webhookResult.data.error_code
-          );
-          console.log(`Paiement FusionPay échoué: ${payment._id}`);
-        }
+        await failPayment(
+          payment,
+          webhookResult.data?.failure_reason || 'Paiement échoué',
+          { code: webhookResult.data?.error_code, source: 'webhook_fusionpay' }
+        );
+        console.log(`Paiement FusionPay échoué: ${payment._id}`);
         break;
 
       case 'payment_pending':
-        if (payment.status !== 'processing') {
+        if (canMoveToProcessing(payment)) {
           payment.status = 'processing';
           payment.addToHistory('processing', 'Paiement en cours de traitement');
           await payment.save();
@@ -876,22 +826,6 @@ router.get('/moneyfusion/test', authenticateToken, authorizeRoles('admin'), asyn
   }
 });
 
-// Fonction utilitaire pour traitement asynchrone des webhooks
-async function processWebhookAsync(provider, payload) {
-  try {
-    // TODO: Implémenter le traitement asynchrone
-    // - Mettre à jour le statut du paiement en base
-    // - Envoyer des notifications
-    // - Mettre à jour les statistiques de gamification
-    // - Générer les reçus
-    
-    console.log(`Processing ${provider} webhook asynchronously:`, payload);
-    
-  } catch (error) {
-    console.error(`Error in async webhook processing for ${provider}:`, error);
-  }
-}
-
 // GET /api/webhooks/test - Endpoint de test (développement seulement)
 if (process.env.NODE_ENV === 'development') {
   router.get('/test', (req, res) => {
@@ -909,20 +843,21 @@ if (process.env.NODE_ENV === 'development') {
 // @access  Public (webhook de PayDunya)
 router.post('/paydunya', express.json(), async (req, res) => {
   try {
-    const webhookData = req.body;
+    // L'IPN PayDunya arrive en formulaire (data[token], data[response_code]…) :
+    // accepter les deux formes, enveloppée dans "data" ou à plat.
+    const webhookData = (req.body && typeof req.body.data === 'object' && req.body.data) || req.body;
     
     console.log('🔔 PayDunya webhook reçu:', webhookData);
 
-    // Traiter le webhook PayDunya
-    const webhookResult = await paydunyaService.processWebhook(webhookData);
-
-    if (!webhookResult.success) {
-      console.error('❌ Erreur lors du traitement du webhook PayDunya:', webhookResult.error);
+    if (!webhookData || !webhookData.token) {
       return res.status(400).json({
         success: false,
-        error: webhookResult.error
+        error: 'Token PayDunya manquant'
       });
     }
+
+    // Traiter le webhook PayDunya
+    const webhookResult = await paydunyaService.processWebhook(webhookData);
 
     // Trouver le paiement correspondant via le token PayDunya
     const payment = await Payment.findOne({
@@ -941,115 +876,47 @@ router.post('/paydunya', express.json(), async (req, res) => {
 
     // Ajouter le webhook à l'historique
     payment.addWebhook('paydunya', 'payment_status_update', webhookData.token, webhookData);
+    payment.set('paydunya.responseCode', webhookData.response_code);
+    payment.set('paydunya.responseText', webhookData.response_text);
 
-    // Traiter selon le statut du paiement
     if (webhookResult.status === 'completed') {
+      // Le webhook n'est pas authentifié : confirmer la facture auprès de PayDunya
+      const confirmation = await paydunyaService.checkPaymentStatus(webhookData.token);
+
+      if (confirmation.status !== 'completed') {
+        console.warn('⚠️ PayDunya: paiement non confirmé par l\'API pour token:', webhookData.token, confirmation.status);
+        return res.status(200).json({
+          success: false,
+          error: 'Paiement non confirmé par PayDunya'
+        });
+      }
+
       console.log('✅ PayDunya: Paiement confirmé pour token:', webhookData.token);
 
-      // Mettre à jour le paiement
-      payment.status = 'completed';
-      payment.paydunya.status = 'completed';
-      payment.paydunya.responseCode = webhookData.response_code;
-      payment.paydunya.responseText = webhookData.response_text || 'Paiement PayDunya confirmé';
-      payment.paydunya.completedAt = new Date();
-      
-      // Ajouter à l'historique
-      payment.addToHistory('completed', 'Paiement PayDunya confirmé via webhook', webhookData.token, {
-        provider: 'paydunya',
-        paymentMethod: payment.paydunya.paymentMethod,
-        amount: payment.amount,
-        currency: payment.currency,
-        responseCode: webhookData.response_code
-      });
-
-      // Marquer la donation comme complétée si nécessaire
-      if (payment.donation && payment.donation.status !== 'completed') {
-        payment.donation.status = 'completed';
-        payment.donation.completedAt = new Date();
-        await payment.donation.save();
-        
-        console.log('✅ PayDunya: Donation marquée comme complétée:', payment.donation._id);
-      }
-
-      // Envoyer email de confirmation
-      try {
-        if (payment.user && payment.user.email && payment.donation) {
-          await emailService.sendDonationConfirmation(
-            payment.user.email,
-            {
-              donorName: payment.user.name,
-              amount: payment.amount,
-              currency: payment.currency,
-              donationTitle: payment.donation.title,
-              transactionId: payment.paydunya.transactionId,
-              paymentMethod: 'PayDunya - ' + payment.paydunya.paymentMethod
-            }
-          );
-          console.log('📧 PayDunya: Email de confirmation envoyé à:', payment.user.email);
-        }
-      } catch (emailError) {
-        console.error('❌ PayDunya: Erreur envoi email:', emailError);
-        // Ne pas faire échouer le webhook à cause de l'email
-      }
-
-      // Notification WebSocket si disponible
-      try {
-        if (websocketService && payment.user) {
-          await websocketService.sendPaymentUpdate(payment.user._id, {
-            paymentId: payment._id,
+      await completePayment(payment, {
+        transactionId: payment.paydunya?.transactionId || webhookData.token,
+        source: 'webhook_paydunya',
+        providerData: {
+          paydunya: {
             status: 'completed',
-            provider: 'paydunya',
-            amount: payment.amount,
-            currency: payment.currency
-          });
-          console.log('📡 PayDunya: Notification WebSocket envoyée pour:', payment.user._id);
+            responseText: webhookData.response_text || 'Paiement PayDunya confirmé',
+            completedAt: new Date()
+          }
         }
-      } catch (wsError) {
-        console.error('❌ PayDunya: Erreur WebSocket:', wsError);
-        // Ne pas faire échouer le webhook à cause de WebSocket
-      }
-
-    } else if (webhookResult.status === 'failed') {
-      console.log('❌ PayDunya: Paiement échoué pour token:', webhookData.token);
-
-      // Mettre à jour le paiement
-      payment.status = 'failed';
-      payment.paydunya.status = 'failed';
-      payment.paydunya.responseCode = webhookData.response_code;
-      payment.paydunya.responseText = webhookData.response_text || 'Paiement PayDunya échoué';
-      payment.paydunya.failedAt = new Date();
-      
-      // Ajouter à l'historique
-      payment.addToHistory('failed', 'Paiement PayDunya échoué via webhook', webhookData.token, {
-        provider: 'paydunya',
-        paymentMethod: payment.paydunya.paymentMethod,
-        responseCode: webhookData.response_code,
-        responseText: webhookData.response_text
       });
-
-      // Marquer la donation comme échouée si nécessaire
-      if (payment.donation && payment.donation.status !== 'failed') {
-        payment.donation.status = 'pending'; // Garder en pending pour permettre un autre essai
-        await payment.donation.save();
-      }
-
     } else {
-      console.log('ℹ️ PayDunya: Statut intermédiaire pour token:', webhookData.token, 'Statut:', webhookResult.status);
-      
-      // Mettre à jour uniquement le statut PayDunya interne
-      payment.paydunya.responseCode = webhookData.response_code;
-      payment.paydunya.responseText = webhookData.response_text;
-      
-      // Ajouter à l'historique sans changer le statut principal
-      payment.addToHistory('info', `Webhook PayDunya: ${webhookResult.status}`, webhookData.token, {
+      // PayDunya n'envoie '00' que pour un succès : tout autre code est un état
+      // intermédiaire ou un échec. On journalise sans clore le paiement, la
+      // vérification (/payments/:id/verify) reste la source de vérité.
+      console.log('ℹ️ PayDunya: notification non concluante pour token:', webhookData.token, 'Code:', webhookData.response_code);
+
+      payment.addToHistory('info', `Webhook PayDunya: code ${webhookData.response_code || 'inconnu'}`, null, {
         provider: 'paydunya',
         responseCode: webhookData.response_code,
         responseText: webhookData.response_text
       });
+      await payment.save();
     }
-
-    // Sauvegarder le paiement
-    await payment.save();
 
     console.log('✅ PayDunya: Webhook traité avec succès pour paiement:', payment._id);
 
@@ -1141,127 +1008,58 @@ router.post('/geniuspay', rawBodyParser, async (req, res) => {
 
     switch (webhookResult.type) {
       case 'payment_completed':
-        if (payment.status !== 'completed') {
-          console.log('✅ Paiement GeniusPay complété:', webhookResult.transactionId);
+        console.log('✅ Paiement GeniusPay complété:', webhookResult.transactionId);
 
-          await payment.markCompleted({
+        await completePayment(payment, {
+          transactionId: webhookResult.transactionId,
+          source: 'webhook_geniuspay',
+          providerData: {
             geniuspay: {
-              ...payment.geniuspay,
               status: 'completed',
               completedAt: new Date(),
               fees: webhookResult.data?.fees,
               netAmount: webhookResult.data?.netAmount,
               apiResponse: webhookPayload
             }
-          });
-
-          if (payment.donation) {
-            payment.donation.status = 'completed';
-            payment.donation.payment = payment._id;
-            payment.donation.addToHistory('completed', 'Don complété via paiement GeniusPay', null, {
-              paymentId: payment._id,
-              transactionId: webhookResult.transactionId,
-              amount: webhookResult.data?.amount
-            });
-            await payment.donation.save();
           }
-
-          if (payment.user) {
-            await payment.user.updateDonationStats(payment.amount);
-          }
-
-          try {
-            websocketService.notifyPaymentCompleted(payment, payment.donation);
-          } catch (wsErr) {
-            console.warn('⚠️ WebSocket notifyPaymentCompleted:', wsErr.message);
-          }
-
-          try {
-            await emailService.sendDonationReceiptEmail(
-              payment.user.email,
-              payment.user.firstName,
-              {
-                receiptNumber: payment.donation.receipt.number,
-                donorName: `${payment.user.firstName} ${payment.user.lastName}`,
-                formattedAmount: payment.formattedAmount,
-                donationDate: payment.donation.createdAt,
-                paymentMethod: 'GeniusPay',
-                category: payment.donation.category,
-                transactionId: webhookResult.transactionId
-              }
-            );
-          } catch (emailError) {
-            console.error('❌ Erreur envoi reçu GeniusPay:', emailError);
-          }
-        }
+        });
         break;
 
       case 'payment_failed':
-        if (payment.status !== 'failed') {
-          console.log('❌ Paiement GeniusPay échoué:', webhookResult.transactionId);
+        console.log('❌ Paiement GeniusPay échoué:', webhookResult.transactionId);
 
-          await payment.markFailed(
-            webhookResult.data?.originalStatus || 'Paiement refusé par GeniusPay',
-            'PAYMENT_FAILED'
-          );
-
-          if (payment.donation && payment.donation.status !== 'failed') {
-            payment.donation.status = 'failed';
-            payment.donation.addToHistory('failed', 'Don échoué suite au paiement GeniusPay', null, {
-              paymentId: payment._id,
-              reason: webhookResult.data?.originalStatus
-            });
-            await payment.donation.save();
-          }
-
-          try {
-            websocketService.notifyPaymentFailed(payment, payment.donation, {
-              message: webhookResult.data?.originalStatus || 'Paiement échoué',
-              code: 'PAYMENT_FAILED'
-            });
-          } catch (wsErr) {
-            console.warn('⚠️ WebSocket notifyPaymentFailed:', wsErr.message);
-          }
-        }
+        await failPayment(
+          payment,
+          webhookResult.data?.originalStatus || 'Paiement refusé par GeniusPay',
+          { code: 'PAYMENT_FAILED', source: 'webhook_geniuspay' }
+        );
         break;
 
       case 'payment_cancelled':
-        if (!['cancelled', 'completed'].includes(payment.status)) {
-          payment.status = 'cancelled';
-          payment.addToHistory('cancelled', 'Paiement annulé via GeniusPay');
-          await payment.save();
-
-          if (payment.donation && !['completed', 'cancelled'].includes(payment.donation.status)) {
-            payment.donation.status = 'failed';
-            payment.donation.addToHistory('failed', 'Don annulé suite au paiement GeniusPay');
-            await payment.donation.save();
-          }
-        }
+        await failPayment(payment, 'Paiement annulé via GeniusPay', {
+          status: 'cancelled',
+          code: 'PAYMENT_CANCELLED',
+          source: 'webhook_geniuspay'
+        });
         break;
 
       case 'payment_refunded':
         if (payment.status !== 'refunded') {
           payment.status = 'refunded';
-          payment.geniuspay = {
-            ...payment.geniuspay,
-            status: 'refunded',
-            apiResponse: webhookPayload
-          };
+          payment.set('geniuspay.status', 'refunded');
+          payment.set('geniuspay.apiResponse', webhookPayload);
           payment.addToHistory('refunded', 'Paiement remboursé via GeniusPay');
           await payment.save();
         }
         break;
 
       case 'payment_pending':
-        if (!['processing', 'completed'].includes(payment.status)) {
+        if (canMoveToProcessing(payment)) {
           console.log('⏳ Paiement GeniusPay en attente:', webhookResult.transactionId);
 
           payment.status = 'processing';
-          payment.geniuspay = {
-            ...payment.geniuspay,
-            status: 'pending',
-            metadata: webhookResult.data
-          };
+          payment.set('geniuspay.status', 'pending');
+          payment.set('geniuspay.metadata', webhookResult.data);
           payment.addToHistory('processing', 'Paiement en cours de traitement via GeniusPay');
           await payment.save();
 

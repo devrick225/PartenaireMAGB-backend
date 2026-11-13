@@ -1,3 +1,4 @@
+const { amountInXofExpr } = require('../utils/currency');
 const { validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 const User = require('../models/User');
@@ -99,19 +100,14 @@ const getProfile = async (req, res) => {
 // @access  Private
 const updateProfile = async (req, res) => {
   try {
-    console.log('🔍 Request body for updateProfile:', JSON.stringify(req.body, null, 2));
-    
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('❌ Validation errors:', JSON.stringify(errors.array(), null, 2));
       return res.status(400).json({
         success: false,
         error: 'Données invalides',
         details: errors.array()
       });
     }
-    
-    console.log('✅ Validation passed, proceeding with update');
 
     const updates = req.body;
     const user = await User.findById(req.user.id).populate('profile');
@@ -146,8 +142,16 @@ const updateProfile = async (req, res) => {
     // Nettoyer les updates - exclure le champ user pour éviter les erreurs
     const { user: userField, ...rawUpdates } = updates;
     const cleanUpdates = cleanEmptyValues(rawUpdates);
-    
-    console.log('🧹 Cleaned updates:', JSON.stringify(cleanUpdates, null, 2));
+
+    // Seules les sections du profil modifiables par l'utilisateur sont appliquées :
+    // les champs calculés ou réservés au staff (isComplete, notes, user…) sont ignorés.
+    const EDITABLE_PROFILE_FIELDS = [
+      'dateOfBirth', 'gender', 'maritalStatus', 'occupation', 'address',
+      'emergencyContact', 'churchMembership', 'donationPreferences', 'financialInfo', 'familyInfo'
+    ];
+    const profileUpdates = Object.fromEntries(
+      Object.entries(cleanUpdates).filter(([key]) => EDITABLE_PROFILE_FIELDS.includes(key.split('.')[0]))
+    );
 
     let profile = user.profile;
     
@@ -155,14 +159,14 @@ const updateProfile = async (req, res) => {
     if (!profile) {
       profile = await Profile.create({
         user: user._id,
-        ...cleanUpdates
+        ...profileUpdates
       });
       user.profile = profile._id;
       await user.save({ validateBeforeSave: false });
     } else {
       // Mettre à jour le profil existant avec gestion des champs imbriqués
-      Object.keys(cleanUpdates).forEach(key => {
-        if (cleanUpdates[key] !== undefined) {
+      Object.keys(profileUpdates).forEach(key => {
+        if (profileUpdates[key] !== undefined) {
           // Gérer les champs imbriqués spéciaux
           if (key.includes('.')) {
             // Utiliser la notation point pour les champs imbriqués
@@ -179,7 +183,7 @@ const updateProfile = async (req, res) => {
             
             // Assigner la valeur avec gestion des champs enum
             const finalKey = keys[keys.length - 1];
-            let value = cleanUpdates[key];
+            let value = profileUpdates[key];
             
             // Convertir les chaînes vides en null pour les champs enum
             if (typeof value === 'string' && value === '' && 
@@ -190,7 +194,7 @@ const updateProfile = async (req, res) => {
             current[finalKey] = value;
           } else {
             // Champ simple avec gestion des champs enum
-            let value = cleanUpdates[key];
+            let value = profileUpdates[key];
             
             // Convertir les chaînes vides en null pour les champs enum
             if (typeof value === 'string' && value === '' && 
@@ -652,15 +656,16 @@ const getUserDonations = async (req, res) => {
     const donations = await Donation.paginate(filter, options);
 
     // Calculer les statistiques
-    const statsFilter = { user: id, status: 'completed' };
+    // aggregate() ne convertit pas les chaînes en ObjectId
+    const statsFilter = { user: new mongoose.Types.ObjectId(id), status: 'completed' };
     const [stats] = await Donation.aggregate([
       { $match: statsFilter },
       {
         $group: {
           _id: null,
-          totalAmount: { $sum: '$amount' },
+          totalAmount: { $sum: amountInXofExpr() },
           totalCount: { $sum: 1 },
-          averageAmount: { $avg: '$amount' }
+          averageAmount: { $avg: amountInXofExpr() }
         }
       }
     ]);
@@ -732,9 +737,9 @@ const getUserStats = async (req, res) => {
       {
         $group: {
           _id: null,
-          totalAmount: { $sum: '$amount' },
+          totalAmount: { $sum: amountInXofExpr() },
           totalCount: { $sum: 1 },
-          averageAmount: { $avg: '$amount' }
+          averageAmount: { $avg: amountInXofExpr() }
         }
       }
     ]);
@@ -1147,54 +1152,54 @@ const getLeaderboard = async (req, res) => {
         break;
     }
 
-    let leaderboard;
+    // Classement calculé à partir des dons complétés et non anonymes : un don fait
+    // anonymement ne doit pas apparaître, même sous forme de total.
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
 
-    if (period === 'all') {
-      // Utiliser les totaux stockés dans User
-      leaderboard = await User.find({ isActive: true })
-        .select('firstName lastName avatar totalDonations donationCount level points badges')
-        .sort({ totalDonations: -1 })
-        .limit(parseInt(limit));
-    } else {
-      // Calculer pour la période spécifique
-      leaderboard = await Donation.aggregate([
-        { 
-          $match: { 
-            status: 'completed',
-            ...dateFilter
-          } 
-        },
-        {
-          $group: {
-            _id: '$user',
-            totalAmount: { $sum: '$amount' },
-            donationCount: { $sum: 1 }
-          }
-        },
-        { $sort: { totalAmount: -1 } },
-        { $limit: parseInt(limit) },
-        {
-          $lookup: {
-            from: 'users',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'user'
-          }
-        },
-        { $unwind: '$user' },
-        {
-          $project: {
-            firstName: '$user.firstName',
-            lastName: '$user.lastName',
-            avatar: '$user.avatar',
-            level: '$user.level',
-            badges: '$user.badges',
-            totalAmount: 1,
-            donationCount: 1
-          }
+    const leaderboard = await Donation.aggregate([
+      { 
+        $match: { 
+          status: 'completed',
+          isAnonymous: { $ne: true },
+          ...dateFilter
+        } 
+      },
+      {
+        $group: {
+          _id: '$user',
+          totalAmount: { $sum: amountInXofExpr() },
+          donationCount: { $sum: 1 }
         }
-      ]);
-    }
+      },
+      { $sort: { totalAmount: -1 } },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'user'
+        }
+      },
+      { $unwind: '$user' },
+      { $match: { 'user.isActive': true } },
+      { $limit: safeLimit },
+      {
+        $project: {
+          firstName: '$user.firstName',
+          // Seule l'initiale du nom est exposée aux autres utilisateurs
+          lastName: {
+            $concat: [{ $toUpper: { $substrCP: [{ $ifNull: ['$user.lastName', ''] }, 0, 1] } }, '.']
+          },
+          avatar: '$user.avatar',
+          level: '$user.level',
+          points: '$user.points',
+          badges: '$user.badges',
+          totalAmount: 1,
+          totalDonations: '$totalAmount',
+          donationCount: 1
+        }
+      }
+    ]);
 
     // Trouver le rang de l'utilisateur actuel
     const userRank = leaderboard.findIndex(

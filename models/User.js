@@ -1,7 +1,14 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const mongoosePaginate = require('mongoose-paginate-v2');
+
+// Nombre maximal d'appareils connectés en même temps par compte
+const MAX_SESSIONS = 10;
+// Délai pendant lequel l'ancien refresh token reste accepté après rotation
+// (deux requêtes parties en même temps de la même application)
+const REFRESH_REUSE_GRACE_MS = 60 * 1000;
 
 const userSchema = new mongoose.Schema({
   // Informations personnelles de base
@@ -23,7 +30,8 @@ const userSchema = new mongoose.Schema({
     unique: true,
     lowercase: true,
     match: [
-      /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
+      // Accepte les alias (+tag) et les extensions longues (.info, .church, .africa…)
+      /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/,
       'Veuillez entrer un email valide'
     ]
   },
@@ -95,8 +103,6 @@ const userSchema = new mongoose.Schema({
     type: String,
     unique: true,
     uppercase: true,
-    length: 10,
-    index: true,
     validate: {
       validator: function(v) {
         // Permettre undefined pendant la création (sera généré par le middleware)
@@ -185,9 +191,37 @@ const userSchema = new mongoose.Schema({
     type: Date,
     select: false
   },
+  // Nombre de codes erronés saisis — le code est invalidé au-delà du seuil (anti brute-force)
+  passwordResetCodeAttempts: {
+    type: Number,
+    default: 0,
+    select: false
+  },
   
   passwordResetToken: {
     type: String,
+    select: false
+  },
+
+  // Sessions ouvertes (une par appareil). Les JWT portent l'identifiant de session :
+  // supprimer la session (déconnexion, changement de mot de passe) invalide aussitôt
+  // l'access token et le refresh token correspondants.
+  sessions: {
+    type: [{
+      _id: false,
+      sid: String,          // identifiant de session, présent dans les deux tokens
+      rid: String,          // identifiant du refresh token courant (rotation)
+      prevRid: String,      // refresh token précédent, toléré quelques secondes
+      rotatedAt: Date,
+      createdAt: Date,
+      expiresAt: Date
+    }],
+    default: [],
+    select: false
+  },
+  // Les tokens émis avant cette date (anciens tokens sans session) sont refusés
+  passwordChangedAt: {
+    type: Date,
     select: false
   },
   passwordResetExpires: {
@@ -236,9 +270,18 @@ const userSchema = new mongoose.Schema({
   }]
 }, {
   timestamps: true,
-  toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+  toJSON: { virtuals: true, transform: stripPrivateFields },
+  toObject: { virtuals: true, transform: stripPrivateFields }
 });
+
+// Champs techniques jamais renvoyés au client, même s'ils ont été chargés
+function stripPrivateFields(doc, ret) {
+  delete ret.password;
+  delete ret.sessions;
+  delete ret.passwordChangedAt;
+  delete ret.passwordResetCodeAttempts;
+  return ret;
+}
 
 // Indexes pour les performances
 // userSchema.index({ email: 1 }); // Supprimé car unique: true crée déjà l'index
@@ -374,7 +417,7 @@ userSchema.methods.generateAuthToken = function() {
       role: this.role 
     },
     process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRE }
+    { expiresIn: process.env.JWT_EXPIRE || '7d' }
   );
 };
 
@@ -383,8 +426,123 @@ userSchema.methods.generateRefreshToken = function() {
   return jwt.sign(
     { id: this._id },
     process.env.JWT_REFRESH_SECRET,
-    { expiresIn: process.env.JWT_REFRESH_EXPIRE }
+    { expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d' }
   );
+};
+
+// ---------------------------------------------------------------------------
+// Sessions : émission, rotation et révocation des tokens
+// ---------------------------------------------------------------------------
+
+const randomId = () => crypto.randomBytes(16).toString('hex');
+
+const signTokens = (user, sid, rid) => {
+  const token = jwt.sign(
+    { id: user._id, email: user.email, role: user.role, sid },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRE || '7d' }
+  );
+  const refreshToken = jwt.sign(
+    { id: user._id, sid, rid },
+    process.env.JWT_REFRESH_SECRET,
+    { expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d' }
+  );
+  return { token, refreshToken };
+};
+
+// Ouvrir une session (connexion, inscription) et émettre ses tokens
+userSchema.methods.issueTokens = async function() {
+  const sid = randomId();
+  const rid = randomId();
+  const tokens = signTokens(this, sid, rid);
+  const now = new Date();
+
+  await this.constructor.updateOne(
+    { _id: this._id },
+    {
+      $push: {
+        sessions: {
+          $each: [{ sid, rid, createdAt: now, expiresAt: new Date(jwt.decode(tokens.refreshToken).exp * 1000) }],
+          $slice: -MAX_SESSIONS // au-delà, la session la plus ancienne est fermée
+        }
+      }
+    }
+  );
+
+  return tokens;
+};
+
+/**
+ * Échanger un refresh token contre une nouvelle paire de tokens (rotation).
+ * Retourne null si le token n'est plus valable. Un refresh token déjà remplacé
+ * et rejoué après le délai de grâce signale un vol : la session est fermée.
+ */
+userSchema.statics.rotateRefreshToken = async function(decoded) {
+  const User = this;
+  const user = await User.findById(decoded.id).select('+sessions +passwordChangedAt');
+  if (!user || !user.isActive) return null;
+
+  // Ancien refresh token émis avant la mise en place des sessions : accepté une fois
+  // s'il est postérieur au dernier changement de mot de passe, puis converti en session.
+  if (!decoded.sid) {
+    if (user.passwordChangedAt && decoded.iat * 1000 < user.passwordChangedAt.getTime()) return null;
+    return { user, tokens: await user.issueTokens() };
+  }
+
+  const session = (user.sessions || []).find(s => s.sid === decoded.sid);
+  if (!session || (session.expiresAt && session.expiresAt < new Date())) return null;
+
+  if (session.rid !== decoded.rid) {
+    const withinGrace = session.prevRid === decoded.rid &&
+      session.rotatedAt && Date.now() - session.rotatedAt.getTime() < REFRESH_REUSE_GRACE_MS;
+
+    if (!withinGrace) {
+      await User.updateOne({ _id: user._id }, { $pull: { sessions: { sid: decoded.sid } } });
+      console.warn(`⚠️ Refresh token rejoué pour ${user.email} : session ${decoded.sid} fermée`);
+      return null;
+    }
+    // Requête concurrente de la même application : renvoyer des tokens de la session courante
+    return { user, tokens: signTokens(user, session.sid, session.rid) };
+  }
+
+  const rid = randomId();
+  const tokens = signTokens(user, session.sid, rid);
+  const rotated = await User.updateOne(
+    { _id: user._id, sessions: { $elemMatch: { sid: session.sid, rid: session.rid } } },
+    {
+      $set: {
+        'sessions.$.rid': rid,
+        'sessions.$.prevRid': session.rid,
+        'sessions.$.rotatedAt': new Date(),
+        'sessions.$.expiresAt': new Date(jwt.decode(tokens.refreshToken).exp * 1000)
+      }
+    }
+  );
+
+  // Une autre requête vient de faire la rotation : retenter (on tombera dans le délai de grâce)
+  if (rotated.modifiedCount === 0) return User.rotateRefreshToken(decoded);
+
+  return { user, tokens };
+};
+
+// Un access token décodé correspond-il encore à une session ouverte ?
+// (le document doit avoir été chargé avec select('+sessions +passwordChangedAt'))
+userSchema.methods.acceptsToken = function(decoded) {
+  if (decoded.sid) {
+    return (this.sessions || []).some(s => s.sid === decoded.sid && (!s.expiresAt || s.expiresAt > new Date()));
+  }
+  // Ancien token sans session : valable tant que le mot de passe n'a pas changé depuis
+  return !(this.passwordChangedAt && decoded.iat * 1000 < this.passwordChangedAt.getTime());
+};
+
+// Fermer une session (déconnexion d'un appareil)
+userSchema.statics.revokeSession = function(userId, sid) {
+  return this.updateOne({ _id: userId }, { $pull: { sessions: { sid } } });
+};
+
+// Fermer toutes les sessions (changement / réinitialisation du mot de passe)
+userSchema.statics.revokeAllSessions = function(userId) {
+  return this.updateOne({ _id: userId }, { $set: { sessions: [], passwordChangedAt: new Date() } });
 };
 
 // Méthode pour incrémenter les tentatives de connexion
@@ -415,60 +573,69 @@ userSchema.methods.resetLoginAttempts = function() {
   });
 };
 
-// Méthode pour mettre à jour les statistiques de donation
-userSchema.methods.updateDonationStats = function(amount) {
-  // Valider et nettoyer le montant
+// Niveau de partenaire correspondant à un total de dons
+userSchema.statics.partnerLevelFor = function(totalDonations) {
+  const total = Number(totalDonations) || 0;
+
+  if (total >= 10000001) return 'or';
+  if (total >= 1000001) return 'argent';
+  if (total >= 300001) return 'bronze';
+  return 'classique';
+};
+
+// Méthode pour mettre à jour les statistiques de donation.
+// L'incrément est fait en base ($inc) et non sur le document en mémoire : le résultat
+// reste correct si le document a été chargé partiellement (populate avec select) ou
+// si deux paiements sont confirmés en même temps.
+userSchema.methods.updateDonationStats = async function(amount) {
   const validAmount = Number(amount);
-  if (isNaN(validAmount) || validAmount < 0) {
+  if (!Number.isFinite(validAmount) || validAmount < 0) {
     console.error(`❌ Montant invalide pour updateDonationStats: ${amount} (type: ${typeof amount})`);
     throw new Error('Montant de donation invalide');
   }
 
-  // S'assurer que les valeurs actuelles sont valides
-  this.totalDonations = isNaN(this.totalDonations) ? 0 : Number(this.totalDonations);
-  this.donationCount = isNaN(this.donationCount) ? 0 : Number(this.donationCount);
-  this.points = isNaN(this.points) ? 0 : Number(this.points);
-  this.level = isNaN(this.level) ? 1 : Number(this.level);
+  const User = this.constructor;
+  const earnedPoints = Math.floor(validAmount / 1000); // 1 point pour 1000 XOF ou équivalent
 
-  // Stocker l'ancien niveau de partenaire pour détecter les changements
-  const oldPartnerLevel = this.partnerLevel;
+  const updated = await User.findOneAndUpdate(
+    { _id: this._id },
+    { $inc: { totalDonations: validAmount, donationCount: 1, points: earnedPoints } },
+    { new: true, projection: 'totalDonations donationCount points level partnerLevel' }
+  );
 
-  // Mettre à jour les statistiques
-  this.totalDonations += validAmount;
-  this.donationCount += 1;
-  
-  // Système de points (1 point pour 1000 XOF ou équivalent)
-  const points = Math.floor(validAmount / 1000);
-  this.points += points;
-  
-  // Système de niveaux (tous les 1000 points)
-  const newLevel = Math.floor(this.points / 1000) + 1;
-  if (newLevel > this.level) {
-    this.level = newLevel;
+  if (!updated) {
+    throw new Error('Utilisateur introuvable pour la mise à jour des statistiques');
   }
 
-  // Calculer le nouveau niveau de partenaire
-  const newPartnerLevel = this.calculatePartnerLevel();
+  // Niveaux (tous les 1000 points) et niveau de partenaire
+  const level = Math.max(Number(updated.level) || 1, Math.floor((Number(updated.points) || 0) / 1000) + 1);
+  const partnerLevel = User.partnerLevelFor(updated.totalDonations);
 
-  console.log(`✅ Stats utilisateur mises à jour - Amount: ${validAmount}, Total: ${this.totalDonations}, Count: ${this.donationCount}, Points: ${this.points}, Partner Level: ${oldPartnerLevel} → ${newPartnerLevel}`);
-  
-  return this.save();
+  if (level !== updated.level || partnerLevel !== updated.partnerLevel) {
+    await User.updateOne({ _id: this._id }, { $set: { level, partnerLevel } });
+  }
+
+  // Refléter les nouvelles valeurs sur le document en mémoire sans les marquer comme modifiées
+  const fresh = {
+    totalDonations: updated.totalDonations,
+    donationCount: updated.donationCount,
+    points: updated.points,
+    level,
+    partnerLevel
+  };
+  Object.entries(fresh).forEach(([field, value]) => {
+    this[field] = value;
+    this.unmarkModified(field);
+  });
+
+  console.log(`✅ Stats utilisateur mises à jour - Amount: ${validAmount}, Total: ${fresh.totalDonations}, Count: ${fresh.donationCount}, Points: ${fresh.points}, Partner Level: ${partnerLevel}`);
+
+  return this;
 };
 
 // Méthode pour calculer le niveau de partenaire basé sur le total des dons
 userSchema.methods.calculatePartnerLevel = function() {
-  const totalDonations = this.totalDonations || 0;
-  
-  if (totalDonations >= 10000001) {
-    this.partnerLevel = 'or';
-  } else if (totalDonations >= 1000001) {
-    this.partnerLevel = 'argent';
-  } else if (totalDonations >= 300001) {
-    this.partnerLevel = 'bronze';
-  } else {
-    this.partnerLevel = 'classique';
-  }
-  
+  this.partnerLevel = this.constructor.partnerLevelFor(this.totalDonations);
   return this.partnerLevel;
 };
 

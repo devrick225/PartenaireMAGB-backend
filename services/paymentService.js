@@ -188,17 +188,22 @@ class PaymentService {
           completedAt: response.data.data.payment_date
         };
       } else {
+        // Seul un statut REFUSED est un échec définitif ; les autres codes
+        // (attente de validation client, OTP…) signifient que le paiement est en cours.
+        const providerStatus = String(response.data?.data?.status || '').toUpperCase();
         return {
           success: false,
-          status: 'failed',
-          message: response.data?.message || 'Paiement non trouvé ou échoué'
+          status: providerStatus === 'REFUSED' ? 'refused' : 'pending',
+          message: response.data?.message || 'Paiement non confirmé'
         };
       }
     } catch (error) {
+      // Erreur technique : on ne sait rien du paiement, il reste en attente
       console.error('❌ Erreur CinetPay verification:', error.message);
       return {
         success: false,
-        status: 'failed',
+        status: 'pending',
+        verificationError: true,
         message: error.message
       };
     }
@@ -462,6 +467,43 @@ class PaymentService {
       console.error('Erreur obtention token PayPal:', error);
       throw new Error('Impossible d\'obtenir le token PayPal');
     }
+  }
+
+  // Lire l'état d'une commande PayPal (source de vérité pour les webhooks)
+  async getPayPalOrder(orderId) {
+    const accessToken = await this.getPayPalAccessToken();
+    const response = await axios.get(
+      `${this.getPayPalBaseUrl()}/v2/checkout/orders/${orderId}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    return response.data;
+  }
+
+  /**
+   * Vérifier la signature d'un webhook PayPal auprès de l'API PayPal.
+   * Nécessite PAYPAL_WEBHOOK_ID (identifiant du webhook dans le tableau de bord PayPal).
+   * Retourne null si la vérification n'est pas configurée.
+   */
+  async verifyPayPalWebhook(headers, event) {
+    const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+    if (!webhookId) return null;
+
+    const accessToken = await this.getPayPalAccessToken();
+    const response = await axios.post(
+      `${this.getPayPalBaseUrl()}/v1/notifications/verify-webhook-signature`,
+      {
+        auth_algo: headers['paypal-auth-algo'],
+        cert_url: headers['paypal-cert-url'],
+        transmission_id: headers['paypal-transmission-id'],
+        transmission_sig: headers['paypal-transmission-sig'],
+        transmission_time: headers['paypal-transmission-time'],
+        webhook_id: webhookId,
+        webhook_event: event
+      },
+      { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` } }
+    );
+
+    return response.data?.verification_status === 'SUCCESS';
   }
 
   getPayPalBaseUrl() {

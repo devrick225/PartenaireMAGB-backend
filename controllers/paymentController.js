@@ -1,3 +1,4 @@
+const { amountInXofExpr } = require('../utils/currency');
 const { validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 const Payment = require('../models/Payment');
@@ -8,7 +9,7 @@ const fusionPayService = require('../services/fusionPayService');
 const moneyFusionService = require('../services/moneyFusionService');
 const paydunyaService = require('../services/paydunyaService');
 const geniusPayService = require('../services/geniusPayService');
-const emailService = require('../services/emailService');
+const { completePayment, failPayment } = require('../services/paymentCompletionService');
 
 // Fonction utilitaire pour générer l'URL de callback mobile
 const generateMobileCallbackUrl = (transactionId, donationId, status = 'completed') => {
@@ -64,6 +65,18 @@ const initializePayment = async (req, res) => {
       });
     }
 
+    // Un don déjà réglé ou annulé ne doit pas pouvoir être payé une seconde fois.
+    // Les échéances d'un don récurrent sont des dons distincts (voir recurringDonationService).
+    if (['completed', 'refunded', 'cancelled'].includes(donation.status)) {
+      return res.status(409).json({
+        success: false,
+        error: donation.status === 'completed'
+          ? 'Ce don a déjà été payé'
+          : 'Ce don ne peut plus être payé',
+        code: 'DONATION_NOT_PAYABLE'
+      });
+    }
+
     let payment;
 
     // Vérifier si on doit mettre à jour un paiement existant ou en créer un nouveau
@@ -83,6 +96,22 @@ const initializePayment = async (req, res) => {
         return res.status(403).json({
           success: false,
           error: 'Accès non autorisé à ce paiement'
+        });
+      }
+
+      if (payment.donation.toString() !== donation._id.toString()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Ce paiement ne correspond pas à cette donation'
+        });
+      }
+
+      // Ne jamais réinitialiser un paiement encaissé ou remboursé
+      if (['completed', 'refunded', 'partially_refunded'].includes(payment.status)) {
+        return res.status(409).json({
+          success: false,
+          error: 'Ce paiement est déjà finalisé',
+          code: 'PAYMENT_ALREADY_FINALIZED'
         });
       }
 
@@ -403,8 +432,12 @@ const initializePayment = async (req, res) => {
     } catch (paymentError) {
       console.error(`Erreur initialisation paiement ${provider}:`, paymentError);
       
-      // Marquer le paiement comme échoué
-      payment.markFailed(paymentError.message);
+      // Marquer le paiement comme échoué (sans faire échouer la réponse si la sauvegarde échoue)
+      try {
+        await payment.markFailed(paymentError.message);
+      } catch (saveError) {
+        console.error('Erreur sauvegarde échec paiement:', saveError.message);
+      }
       
       res.status(400).json({
         success: false,
@@ -578,6 +611,20 @@ const verifyPayment = async (req, res) => {
       });
     }
 
+    // Paiement déjà finalisé : ne pas ré-interroger le fournisseur ni recompter le don.
+    // MoneyFusion est exclu car le client attend la réponse brute du fournisseur
+    // (la mise à jour reste idempotente dans ce cas).
+    if (payment.provider !== 'moneyfusion' && ['completed', 'refunded', 'partially_refunded'].includes(payment.status)) {
+      return res.json({
+        success: true,
+        message: payment.status === 'completed' ? 'Paiement déjà confirmé' : 'Paiement remboursé',
+        data: {
+          status: payment.status,
+          verifiedAt: payment.transaction?.completedAt
+        }
+      });
+    }
+
     let verificationResult;
 
     try {
@@ -698,17 +745,17 @@ const verifyPayment = async (req, res) => {
         const status = verificationResult?.status || 'pending';
 
         if (status === 'completed') {
-          await payment.markCompleted({
-            paydunya: {
-              status: 'completed',
-              completedAt: new Date(),
-              rawResponse: verificationResult.rawResponse
+          await completePayment(payment, {
+            transactionId: payment.paydunya?.transactionId || payment.paydunya?.token,
+            source: 'verify_paydunya',
+            providerData: {
+              paydunya: {
+                status: 'completed',
+                completedAt: new Date(),
+                rawResponse: verificationResult.rawResponse
+              }
             }
           });
-
-          payment.donation.status = 'completed';
-          await payment.donation.save();
-          await payment.user.updateDonationStats(payment.amount);
 
           return res.json({
             success: true,
@@ -720,52 +767,24 @@ const verifyPayment = async (req, res) => {
           });
         }
 
-        if (status === 'pending') {
-          return res.json({
-            success: true,
-            message: 'Paiement en attente de confirmation',
-            data: {
-              status: 'pending'
-            }
-          });
-        }
-
-        if (status === 'not_found') {
-          return res.json({
-            success: true,
-            message: 'Transaction non encore visible côté fournisseur',
-            data: {
-              status: 'pending'
-            }
-          });
-        }
-
-        await payment.markFailed(verificationResult?.error || 'Paiement PayDunya non confirmé');
-        payment.donation.status = 'failed';
-        await payment.donation.save();
-
+        // PayDunya ne distingue pas « en attente » de « non payé » sur cet endpoint :
+        // on ne clôt pas le paiement, le client peut revérifier.
         return res.json({
           success: true,
-          message: 'Paiement PayDunya échoué',
+          message: status === 'not_found'
+            ? 'Transaction non encore visible côté fournisseur'
+            : 'Paiement en attente de confirmation',
           data: {
-            status: 'failed',
-            details: verificationResult?.error || 'Paiement non confirmé'
+            status: 'pending'
           }
         });
       } else {
-        // Logique pour autres fournisseurs (CinetPay, Stripe, etc.)
+        // Logique pour autres fournisseurs (CinetPay, Stripe, PayPal, FusionPay)
         if (verificationResult.success) {
-          // Marquer le paiement comme complété
-          await payment.markCompleted({
-            [payment.provider]: verificationResult.data
+          await completePayment(payment, {
+            transactionId: payment.transaction?.externalId,
+            source: `verify_${payment.provider}`
           });
-
-          // Mettre à jour la donation
-          payment.donation.status = 'completed';
-          await payment.donation.save();
-
-          // Mettre à jour les statistiques utilisateur
-          await payment.user.updateDonationStats(payment.amount);
 
           res.json({
             success: true,
@@ -776,20 +795,39 @@ const verifyPayment = async (req, res) => {
             }
           });
         } else {
-          // Marquer comme échoué
-          await payment.markFailed(verificationResult.message || 'Vérification échouée');
+          // Seuls les statuts explicitement terminaux clôturent le paiement. Un paiement
+          // encore en cours chez le fournisseur (ou un fournisseur injoignable) reste en
+          // attente : le marquer « échoué » ici faisait perdre des dons réellement payés.
+          const providerStatus = String(verificationResult.status || '').toLowerCase();
+          const TERMINAL_FAILURES = ['failed', 'refused', 'cancelled', 'canceled', 'voided', 'expired', 'declined'];
 
-          res.status(400).json({
-            success: false,
-            error: 'Paiement non confirmé',
-            details: verificationResult.message
+          if (!verificationResult.verificationError && TERMINAL_FAILURES.includes(providerStatus)) {
+            await failPayment(payment, verificationResult.message || 'Paiement refusé par le fournisseur', {
+              source: `verify_${payment.provider}`
+            });
+
+            return res.status(400).json({
+              success: false,
+              error: 'Paiement non confirmé',
+              details: verificationResult.message
+            });
+          }
+
+          res.json({
+            success: true,
+            message: 'Paiement en attente de confirmation',
+            data: {
+              status: 'pending',
+              providerStatus: verificationResult.status
+            }
           });
         }
       }
 
     } catch (verificationError) {
+      // Une erreur technique (réseau, fournisseur indisponible) ne dit rien du paiement :
+      // on ne le marque pas en échec.
       console.error('Erreur vérification paiement:', verificationError);
-      await payment.markFailed(verificationError.message);
 
       res.status(500).json({
         success: false,
@@ -928,8 +966,9 @@ const getPaymentStats = async (req, res) => {
     // Filtrer selon le rôle de l'utilisateur
     const baseFilter = { ...dateFilter };
     if (!isAdmin) {
-      // Utilisateur normal : seulement ses propres paiements
-      baseFilter.user = req.user.id;
+      // Utilisateur normal : seulement ses propres paiements.
+      // aggregate() ne convertit pas les chaînes en ObjectId : passer l'ObjectId directement.
+      baseFilter.user = req.user._id;
     }
     if (provider) baseFilter.provider = provider;
 
@@ -939,7 +978,7 @@ const getPaymentStats = async (req, res) => {
       {
         $group: {
           _id: null,
-          totalVolume: { $sum: '$amount' },
+          totalVolume: { $sum: amountInXofExpr() },
           totalTransactions: { $sum: 1 },
           completedTransactions: {
             $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
@@ -959,7 +998,7 @@ const getPaymentStats = async (req, res) => {
         $group: {
           _id: '$provider',
           count: { $sum: 1 },
-          totalAmount: { $sum: '$amount' },
+          totalAmount: { $sum: amountInXofExpr() },
           successCount: {
             $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
           }
@@ -1029,8 +1068,8 @@ const getPayments = async (req, res) => {
     if (provider) filter.provider = provider;
 
     const options = {
-      page: parseInt(page),
-      limit: parseInt(limit),
+      page: Math.max(parseInt(page, 10) || 1, 1),
+      limit: Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50),
       sort: { createdAt: -1 },
       populate: [
         { path: 'user', select: 'firstName lastName email' },
@@ -1067,14 +1106,34 @@ const getPayments = async (req, res) => {
 // @access  Private
 const getPaymentByDonationId = async (req, res) => {
   try {
-    const payment = await Payment.findOne({ 
-      donation: req.params.donationId 
-    }).populate('donation user');
+    const { donationId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(donationId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de donation invalide'
+      });
+    }
+
+    // Le paiement le plus récent de la donation
+    const payment = await Payment.findOne({ donation: donationId })
+      .sort({ createdAt: -1 })
+      .populate('donation', 'amount currency category type status')
+      .populate('user', 'firstName lastName email');
     
     if (!payment) {
       return res.status(404).json({
         success: false,
         error: 'Payment not found for this donation'
+      });
+    }
+
+    // Vérifier que l'utilisateur a accès à ce paiement
+    const ownerId = payment.user?._id?.toString();
+    if (ownerId !== req.user.id && !['admin', 'moderator', 'treasurer'].includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Accès non autorisé à ce paiement'
       });
     }
     
@@ -1083,9 +1142,10 @@ const getPaymentByDonationId = async (req, res) => {
       data: { payment }
     });
   } catch (error) {
+    console.error('Erreur getPaymentByDonationId:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: 'Erreur lors de la récupération du paiement'
     });
   }
 };

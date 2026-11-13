@@ -18,8 +18,8 @@ const router = express.Router();
 const createDonationValidation = [
   body('amount')
     .isNumeric()
-    .isFloat({ min: 100, max: 2000000 })
-    .withMessage('Le montant doit être entre 100 et 2 000 000'),
+    .isFloat({ min: 200, max: 2000000 })
+    .withMessage('Le montant doit être entre 200 et 2 000 000'),
   body('currency')
     .isIn(['XOF', 'EUR', 'USD'])
     .withMessage('Devise non supportée'),
@@ -90,7 +90,7 @@ router.get('/stats', authenticateToken, getDonationStats);
 router.get('/:id', authenticateToken, getDonation);
 
 // PUT /api/donations/:id - Modifier un don (admin seulement)
-router.put('/:id', authenticateToken, authorizeRoles('admin', 'moderator', 'treasurer', 'support_agent'), updateDonation);
+router.put('/:id', authenticateToken, authorizeRoles('admin', 'moderator', 'treasurer'), updateDonation);
 
 // PATCH /api/donations/:id/status - Mettre à jour le statut d'une donation (système/admin uniquement)
 router.patch('/:id/status', authenticateToken, authorizeRoles('admin', 'moderator', 'treasurer'), updateDonationStatus);
@@ -103,64 +103,31 @@ router.post('/:id/cancel', authenticateToken, [
     .withMessage('La raison ne peut pas dépasser 200 caractères')
 ], cancelRecurringDonation);
 
-// Pages de retour de paiement
-// GET /api/donations/payment/success - Page de succès
-router.get('/payment/success', async (req, res) => {
+// Pages de retour de paiement : redirection vers le frontend avec les paramètres reçus.
+// Les valeurs sont encodées (URLSearchParams) pour qu'un paramètre ne puisse pas en injecter d'autres.
+const paymentReturnRedirect = (page, fields, defaults = {}) => (req, res) => {
+  const base = `${process.env.FRONTEND_URL}/admin/donations/payment/${page}`;
   try {
-    const { donation_id, payment_id, transaction_id, provider } = req.query;
-    
-    // Redirection vers le frontend avec les paramètres
-    const redirectUrl = `${process.env.FRONTEND_URL}/admin/donations/payment/success?` +
-      `donation_id=${donation_id || ''}&` +
-      `payment_id=${payment_id || ''}&` +
-      `transaction_id=${transaction_id || ''}&` +
-      `provider=${provider || ''}`;
-    
-    res.redirect(redirectUrl);
+    const params = new URLSearchParams();
+    fields.forEach(field => {
+      const value = Array.isArray(req.query[field]) ? req.query[field][0] : req.query[field];
+      params.append(field, value || defaults[field] || '');
+    });
+    res.redirect(`${base}?${params.toString()}`);
   } catch (error) {
-    console.error('Erreur page succès:', error);
-    res.redirect(`${process.env.FRONTEND_URL}/admin/donations/payment/failure?error=redirect_error`);
+    console.error(`Erreur page ${page}:`, error);
+    res.redirect(`${base}?error=redirect_error`);
   }
-});
+};
+
+// GET /api/donations/payment/success - Page de succès
+router.get('/payment/success', paymentReturnRedirect('success', ['donation_id', 'payment_id', 'transaction_id', 'provider']));
 
 // GET /api/donations/payment/failure - Page d'échec
-router.get('/payment/failure', async (req, res) => {
-  try {
-    const { donation_id, payment_id, error_code, error_message, transaction_id, provider } = req.query;
-    
-    const redirectUrl = `${process.env.FRONTEND_URL}/admin/donations/payment/failure?` +
-      `donation_id=${donation_id || ''}&` +
-      `payment_id=${payment_id || ''}&` +
-      `error_code=${error_code || ''}&` +
-      `error_message=${encodeURIComponent(error_message || '')}&` +
-      `transaction_id=${transaction_id || ''}&` +
-      `provider=${provider || ''}`;
-    
-    res.redirect(redirectUrl);
-  } catch (error) {
-    console.error('Erreur page échec:', error);
-    res.redirect(`${process.env.FRONTEND_URL}/admin/donations/payment/failure?error=redirect_error`);
-  }
-});
+router.get('/payment/failure', paymentReturnRedirect('failure', ['donation_id', 'payment_id', 'error_code', 'error_message', 'transaction_id', 'provider']));
 
 // GET /api/donations/payment/cancel - Page d'annulation
-router.get('/payment/cancel', async (req, res) => {
-  try {
-    const { donation_id, payment_id, reason, transaction_id, provider } = req.query;
-    
-    const redirectUrl = `${process.env.FRONTEND_URL}/admin/donations/payment/cancel?` +
-      `donation_id=${donation_id || ''}&` +
-      `payment_id=${payment_id || ''}&` +
-      `reason=${reason || 'user_cancelled'}&` +
-      `transaction_id=${transaction_id || ''}&` +
-      `provider=${provider || ''}`;
-    
-    res.redirect(redirectUrl);
-  } catch (error) {
-    console.error('Erreur page annulation:', error);
-    res.redirect(`${process.env.FRONTEND_URL}/admin/donations/payment/cancel?error=redirect_error`);
-  }
-});
+router.get('/payment/cancel', paymentReturnRedirect('cancel', ['donation_id', 'payment_id', 'reason', 'transaction_id', 'provider'], { reason: 'user_cancelled' }));
 
 // Routes administratives pour la vérification des paiements
 // POST /api/donations/verify-payments - Vérification manuelle des paiements
@@ -179,6 +146,26 @@ router.post('/verify-payments', authenticateToken, authorizeRoles('admin', 'trea
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la vérification des paiements'
+    });
+  }
+});
+
+// POST /api/donations/process-recurring - Générer les échéances des dons récurrents arrivées à terme
+router.post('/process-recurring', authenticateToken, authorizeRoles('admin', 'treasurer'), async (req, res) => {
+  try {
+    const cronJobs = require('../services/cronJobs');
+    const results = await cronJobs.runRecurringDonationsNow();
+
+    res.json({
+      success: true,
+      message: 'Dons récurrents traités',
+      data: results
+    });
+  } catch (error) {
+    console.error('Erreur traitement dons récurrents:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du traitement des dons récurrents'
     });
   }
 });

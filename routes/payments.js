@@ -48,8 +48,9 @@ const initializePaymentValidation = [
     })
     .withMessage('Méthode de paiement invalide'),
   body('customerPhone')
-    .optional()
-    .matches(/^\+?[1-9]\d{1,14}$/)
+    .optional({ checkFalsy: true })
+    // Même format que le modèle User : les numéros locaux commençant par 0 sont valides
+    .matches(/^\+?[0-9]\d{7,14}$/)
     .withMessage('Numéro de téléphone invalide'),
   body('existingPaymentId')
     .optional()
@@ -116,34 +117,61 @@ router.get('/callback', paymentCallback);
  * Flux : MoneyFusion → HTTPS backend → deep link (partenaireMagb:// ou exp://)
  * Le deep link est passé en paramètre pour supporter Expo Go en dev.
  */
-router.get('/mobile-callback', (req, res) => {
-  const { donationId, provider, token, statut, transactionId, deepLink } = req.query;
+// Schémas autorisés pour le deep link de retour (app de production et Expo Go en dev)
+const ALLOWED_DEEP_LINK_SCHEMES = ['partenairemagb:', 'exp:', 'exps:'];
 
-  // Mapper le statut MoneyFusion vers le statut interne
-  const status = statut === 'paid' ? 'completed'
-    : statut === 'failed' ? 'failed'
-    : statut === 'cancelled' ? 'cancelled'
+const isAllowedDeepLink = (value) => {
+  try {
+    return ALLOWED_DEEP_LINK_SCHEMES.includes(new URL(value).protocol.toLowerCase());
+  } catch (error) {
+    return false;
+  }
+};
+
+// Sérialise une valeur pour l'insérer dans un <script> inline sans pouvoir en sortir
+const toInlineScriptString = (value) => JSON.stringify(String(value))
+  .replace(/</g, '\\u003c')
+  .replace(/>/g, '\\u003e')
+  .replace(/&/g, '\\u0026')
+  // Tout caractère non ASCII (dont les séparateurs de ligne Unicode) est échappé
+  .replace(/[^\x20-\x7e]/g, (char) => '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0'));
+
+router.get('/mobile-callback', (req, res) => {
+  const first = (value) => (Array.isArray(value) ? value[0] : value);
+  const donationId = first(req.query.donationId);
+  const token = first(req.query.token);
+  const statut = first(req.query.statut);
+  const transactionId = first(req.query.transactionId);
+  const deepLink = first(req.query.deepLink);
+  // MoneyFusion renvoie "statut", GeniusPay "status"
+  const rawStatus = statut || first(req.query.status);
+
+  // Mapper le statut du fournisseur vers le statut interne.
+  // Purement indicatif pour l'affichage : l'application doit toujours confirmer
+  // le paiement via POST /api/payments/:id/verify.
+  const status = ['paid', 'completed', 'success'].includes(rawStatus) ? 'completed'
+    : ['failed', 'failure', 'no paid', 'error'].includes(rawStatus) ? 'failed'
+    : rawStatus === 'cancelled' ? 'cancelled'
     : 'pending';
 
   let targetDeepLink;
 
-  if (deepLink) {
+  // Le deep link vient de la query string : n'accepter que les schémas de l'application,
+  // sinon cette page servirait de redirection ouverte / d'injection de script.
+  if (deepLink && isAllowedDeepLink(deepLink)) {
     // Utiliser le deep link fourni par le mobile (supporte Expo Go en dev)
-    const decoded = decodeURIComponent(deepLink);
-    // Ajouter le statut si pas déjà présent
-    const separator = decoded.includes('?') ? '&' : '?';
-    targetDeepLink = decoded.includes('status=')
-      ? decoded.replace(/status=[^&]+/, `status=${status}`)
-      : `${decoded}${separator}status=${status}`;
+    const separator = deepLink.includes('?') ? '&' : '?';
+    targetDeepLink = /[?&]status=/.test(deepLink)
+      ? deepLink.replace(/([?&])status=[^&]*/, `$1status=${status}`)
+      : `${deepLink}${separator}status=${status}`;
     if (token && !targetDeepLink.includes('transactionId=')) {
-      targetDeepLink += `&transactionId=${token}`;
+      targetDeepLink += `&transactionId=${encodeURIComponent(token)}`;
     }
   } else {
     // Fallback : construire le deep link de production
     const params = new URLSearchParams();
     if (donationId) params.append('donationId', donationId);
-    if (token) params.append('transactionId', token);
-    if (transactionId) params.append('transactionId', transactionId);
+    if (token || transactionId) params.append('transactionId', token || transactionId);
     params.append('status', status);
     targetDeepLink = `partenaireMagb://payment/return?${params.toString()}`;
   }
@@ -153,6 +181,9 @@ router.get('/mobile-callback', (req, res) => {
   if (donationId) fallbackParams.append('donationId', donationId);
   fallbackParams.append('status', status);
   const fallbackUrl = `${process.env.FRONTEND_URL || 'https://partenairemagb-frontend.onrender.com'}/payment-result?${fallbackParams.toString()}`;
+
+  // La page contient un script inline : assouplir la CSP de helmet pour cette réponse uniquement
+  res.set('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'");
 
   // Page HTML qui tente le deep link puis redirige vers le fallback
   res.send(`<!DOCTYPE html>
@@ -171,14 +202,14 @@ router.get('/mobile-callback', (req, res) => {
 </head>
 <body>
   <div class="spinner"></div>
-  <p>Paiement <span class="status">${status === 'completed' ? 'confirmé ✓' : status === 'failed' ? 'échoué ✗' : 'en cours...'}</span></p>
+  <p>Paiement <span class="status">${status === 'completed' ? 'confirmé ✓' : status === 'failed' ? 'échoué ✗' : status === 'cancelled' ? 'annulé' : 'en cours...'}</span></p>
   <p>Retour vers l'application...</p>
   <script>
     // Tenter d'ouvrir le deep link immédiatement
-    window.location.href = '${targetDeepLink}';
+    window.location.href = ${toInlineScriptString(targetDeepLink)};
     // Si l'app ne s'ouvre pas dans 3 secondes, rediriger vers le fallback web
     setTimeout(function() {
-      window.location.href = '${fallbackUrl}';
+      window.location.href = ${toInlineScriptString(fallbackUrl)};
     }, 3000);
   </script>
 </body>

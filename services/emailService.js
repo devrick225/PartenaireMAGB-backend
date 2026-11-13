@@ -274,13 +274,17 @@ class EmailService {
       <div class="header"><h1>🔔 Rappel DON PARTENAIRE MAGB</h1></div>
       <div class="content">
         <h2>Bonjour ${firstName},</h2>
-        <p>Votre prochain DON récurrent est prévu bientôt :</p>
+        <p>Votre DON récurrent est arrivé à échéance :</p>
         <div class="reminder">
           <p><strong>Montant :</strong> ${donationDetails.formattedAmount}</p>
           <p><strong>Fréquence :</strong> ${this.getFrequencyLabel(donationDetails.frequency)}</p>
-          <p><strong>Prochaine échéance :</strong> ${new Date(donationDetails.nextPaymentDate).toLocaleDateString('fr-FR')}</p>
+          <p><strong>Échéance :</strong> ${new Date(donationDetails.nextPaymentDate).toLocaleDateString('fr-FR')}</p>
           <p><strong>Catégorie :</strong> ${this.getCategoryLabel(donationDetails.category)}</p>
         </div>
+        ${donationDetails.paymentUrl
+          ? `<p style="text-align:center"><a href="${donationDetails.paymentUrl}" style="display:inline-block;background:#fd7e14;color:white;padding:12px 30px;text-decoration:none;border-radius:5px">Régler mon don</a></p>
+        <p>Vous pouvez aussi le régler depuis l'application mobile, rubrique « Mes dons ».</p>`
+          : `<p>Connectez-vous à l'application pour le régler, rubrique « Mes dons ».</p>`}
       </div>
       <div class="footer"><p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p></div>
     </div></body></html>`;

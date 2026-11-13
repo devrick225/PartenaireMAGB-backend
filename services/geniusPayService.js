@@ -1,6 +1,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const websocketService = require('./websocketService');
+const { completePayment, failPayment } = require('./paymentCompletionService');
 
 class GeniusPayService {
   constructor() {
@@ -131,11 +132,12 @@ class GeniusPayService {
         const isSuccess = newStatus === 'completed';
 
         if (paymentRecord) {
+          const previousStatus = paymentRecord.status;
           await this.updatePaymentAndDonationStatus(paymentRecord, data);
 
-          if (paymentRecord.status !== newStatus) {
+          if (previousStatus !== paymentRecord.status) {
             try {
-              websocketService.notifyPaymentStatusUpdate(paymentRecord, paymentRecord.status, newStatus);
+              websocketService.notifyPaymentStatusUpdate(paymentRecord, previousStatus, paymentRecord.status);
             } catch (wsError) {
               console.warn('⚠️ Erreur notification WebSocket:', wsError.message);
             }
@@ -170,21 +172,13 @@ class GeniusPayService {
       }
     }
 
-    if (paymentRecord) {
-      try {
-        websocketService.notifyPaymentFailed(paymentRecord, paymentRecord.donation, {
-          message: `Échec vérification GeniusPay après ${this.retryAttempts} tentatives`,
-          code: 'VERIFICATION_FAILED',
-          originalError: lastError?.message
-        });
-      } catch (wsError) {
-        console.warn('⚠️ Erreur notification WebSocket échec:', wsError.message);
-      }
-    }
-
+    // Impossible de joindre GeniusPay : on ne sait pas si le paiement a abouti.
+    // Le statut reste « pending » (verificationError) pour ne pas marquer en échec
+    // un paiement qui a peut-être été encaissé.
     return {
       success: false,
-      status: 'failed',
+      status: 'pending',
+      verificationError: true,
       message: `Échec de vérification après ${this.retryAttempts} tentatives: ${lastError?.message || 'Erreur inconnue'}`,
       metadata: {
         provider: 'geniuspay',
@@ -195,87 +189,44 @@ class GeniusPayService {
   }
 
   /**
-   * Mettre à jour le statut du paiement et de la donation selon la réponse GeniusPay
+   * Mettre à jour le statut du paiement et de la donation selon la réponse GeniusPay.
+   * La finalisation est déléguée à paymentCompletionService (idempotent) : appeler
+   * cette méthode plusieurs fois pour un même paiement ne recompte pas le don.
    */
   async updatePaymentAndDonationStatus(paymentRecord, geniusPayData) {
     try {
       const oldPaymentStatus = paymentRecord.status;
-      const emailService = require('./emailService');
       const newStatus = this.mapStatus(geniusPayData.status);
 
       if (newStatus === 'completed') {
-        await paymentRecord.markCompleted({
-          geniuspay: {
-            ...paymentRecord.geniuspay,
-            status: geniusPayData.status,
-            completedAt: new Date(),
-            apiResponse: geniusPayData
+        const result = await completePayment(paymentRecord, {
+          transactionId: paymentRecord.geniuspay?.reference,
+          source: 'verify_geniuspay',
+          providerData: {
+            geniuspay: {
+              status: geniusPayData.status,
+              completedAt: new Date(),
+              apiResponse: geniusPayData
+            }
           }
         });
 
-        if (paymentRecord.donation) {
-          paymentRecord.donation.status = 'completed';
-          paymentRecord.donation.addToHistory(
-            'updated',
-            `Statut mis à jour automatiquement via vérification GeniusPay (${paymentRecord.donation.status} -> completed)`,
-            null,
-            { paymentProvider: 'geniuspay', paymentStatus: geniusPayData.status, verificationSource: 'verify_payment_api' }
-          );
-          await paymentRecord.donation.save();
+        if (!result.alreadyCompleted) {
+          console.log(`💰 Statut paiement mis à jour: ${oldPaymentStatus} -> completed (GeniusPay: ${geniusPayData.status})`);
         }
+      } else if (newStatus === 'failed' || newStatus === 'cancelled') {
+        const result = await failPayment(paymentRecord, `Paiement GeniusPay ${geniusPayData.status}`, {
+          status: newStatus,
+          code: 'PAYMENT_FAILED',
+          source: 'verify_geniuspay'
+        });
 
-        if (paymentRecord.user) {
-          await paymentRecord.user.updateDonationStats(paymentRecord.amount);
+        if (result.changed) {
+          console.log(`❌ Statut paiement mis à jour: ${oldPaymentStatus} -> ${newStatus} (GeniusPay: ${geniusPayData.status})`);
         }
-
-        if (paymentRecord.user && paymentRecord.donation) {
-          try {
-            await emailService.sendDonationReceiptEmail(
-              paymentRecord.user.email,
-              paymentRecord.user.firstName,
-              {
-                receiptNumber: paymentRecord.donation.receipt.number,
-                donorName: `${paymentRecord.user.firstName} ${paymentRecord.user.lastName}`,
-                formattedAmount: paymentRecord.formattedAmount,
-                donationDate: paymentRecord.donation.createdAt,
-                paymentMethod: paymentRecord.paymentMethod,
-                category: paymentRecord.donation.category
-              }
-            );
-          } catch (emailError) {
-            console.error('Erreur envoi reçu par email:', emailError);
-          }
-        }
-
-        console.log(`💰 Statut paiement mis à jour: ${oldPaymentStatus} -> completed (GeniusPay: ${geniusPayData.status})`);
-      } else if (newStatus === 'failed') {
-        await paymentRecord.markFailed(`Paiement GeniusPay ${geniusPayData.status}`);
-
-        if (paymentRecord.donation) {
-          paymentRecord.donation.status = 'failed';
-          paymentRecord.donation.addToHistory(
-            'updated',
-            `Statut mis à jour automatiquement via vérification GeniusPay (${paymentRecord.donation.status} -> failed)`,
-            null,
-            { paymentProvider: 'geniuspay', paymentStatus: geniusPayData.status, verificationSource: 'verify_payment_api' }
-          );
-          await paymentRecord.donation.save();
-        }
-
-        console.log(`❌ Statut paiement mis à jour: ${oldPaymentStatus} -> failed (GeniusPay: ${geniusPayData.status})`);
-      } else if (newStatus === 'pending' && paymentRecord.status !== 'pending') {
-        paymentRecord.status = 'pending';
-        paymentRecord.geniuspay = {
-          ...paymentRecord.geniuspay,
-          status: geniusPayData.status,
-          apiResponse: geniusPayData
-        };
-        paymentRecord.addToHistory(
-          'updated',
-          `Statut mis à jour via vérification GeniusPay: ${oldPaymentStatus} -> pending`,
-          null,
-          { geniusPayStatus: geniusPayData.status }
-        );
+      } else if (newStatus === 'pending' && paymentRecord.status === 'pending') {
+        // Encore en attente côté GeniusPay : tracer sans toucher au statut du paiement
+        paymentRecord.set('geniuspay.status', geniusPayData.status);
         await paymentRecord.save();
       }
     } catch (error) {
@@ -429,6 +380,9 @@ class GeniusPayService {
       const Payment = require('../models/Payment');
 
       const cutoffDate = new Date(Date.now() - (maxAge * 60 * 60 * 1000));
+      // Au-delà de ce délai, un paiement toujours en attente chez le fournisseur est considéré expiré
+      const expiryHours = Math.max(parseInt(process.env.PAYMENT_EXPIRY_HOURS, 10) || 24, maxAge);
+      const expiryCutoff = new Date(Date.now() - (expiryHours * 60 * 60 * 1000));
 
       const pendingPayments = await Payment.find({
         provider: 'geniuspay',
@@ -453,9 +407,20 @@ class GeniusPayService {
 
           const verificationResult = await this.verifyPayment(reference, payment);
 
-          if (verificationResult.success && verificationResult.status === 'completed') {
+          if (verificationResult.verificationError) {
+            results.errors++;
+          } else if (verificationResult.status === 'completed') {
             results.completed++;
-          } else if (verificationResult.status === 'failed') {
+          } else if (['failed', 'cancelled'].includes(verificationResult.status)) {
+            results.failed++;
+          } else if (payment.createdAt < expiryCutoff) {
+            // Le fournisseur a répondu mais le paiement n'a jamais été finalisé :
+            // on le clôt pour qu'il ne soit pas revérifié indéfiniment.
+            await failPayment(payment, 'Paiement expiré (non finalisé dans le délai imparti)', {
+              status: 'expired',
+              code: 'PAYMENT_EXPIRED',
+              source: 'cron_geniuspay'
+            });
             results.failed++;
           }
         } catch (error) {

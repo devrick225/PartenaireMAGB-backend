@@ -6,6 +6,48 @@ const Profile = require('../models/Profile');
 const emailService = require('../services/emailService');
 const smsService = require('../services/smsService');
 
+// Les tokens à usage unique envoyés par email (vérification, réinitialisation) sont
+// stockés hachés : une fuite de la base ne permet pas de les utiliser.
+const hashToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
+// Accepte aussi la forme en clair pour les liens émis avant ce changement
+const tokenLookup = (token) => ({ $in: [hashToken(token), String(token)] });
+
+// Code à 6 chiffres tiré d'un générateur cryptographique (Math.random est prévisible)
+const generateSixDigitCode = () => crypto.randomInt(100000, 1000000).toString();
+
+// Nombre maximal de codes de réinitialisation erronés avant invalidation du code
+const MAX_RESET_CODE_ATTEMPTS = 5;
+
+// express-validator normalise l'email saisi (ex. suppression des points Gmail). Les comptes
+// dont l'email a été enregistré par un autre chemin (admin, import, seed) gardent leur forme
+// d'origine : on cherche donc les deux formes pour ne bloquer aucun utilisateur.
+const emailCandidates = (req) => {
+  const candidates = new Set();
+  if (typeof req.body.email === 'string') candidates.add(req.body.email.trim().toLowerCase());
+  const raw = req.rawEmail;
+  if (typeof raw === 'string') candidates.add(raw.trim().toLowerCase());
+  return [...candidates];
+};
+
+// Vérifie un code de réinitialisation et invalide le code après trop d'essais erronés
+const checkPasswordResetCode = async (user, code) => {
+  const isValid = !!user.passwordResetCode &&
+    !!user.passwordResetCodeExpires &&
+    user.passwordResetCodeExpires > new Date() &&
+    (user.passwordResetCodeAttempts || 0) < MAX_RESET_CODE_ATTEMPTS &&
+    user.passwordResetCode === String(code);
+
+  if (!isValid && user.passwordResetCode) {
+    const attempts = (user.passwordResetCodeAttempts || 0) + 1;
+    const update = attempts >= MAX_RESET_CODE_ATTEMPTS
+      ? { $unset: { passwordResetCode: 1, passwordResetCodeExpires: 1 }, $set: { passwordResetCodeAttempts: 0 } }
+      : { $set: { passwordResetCodeAttempts: attempts } };
+    await User.updateOne({ _id: user._id }, update);
+  }
+
+  return isValid;
+};
+
 // @desc    Inscription d'un nouvel utilisateur
 // @route   POST /api/auth/register
 // @access  Public
@@ -84,13 +126,12 @@ const register = async (req, res) => {
     const emailVerificationToken = crypto.randomBytes(32).toString('hex');
     const emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
 
-    user.emailVerificationToken = emailVerificationToken;
+    user.emailVerificationToken = hashToken(emailVerificationToken);
     user.emailVerificationExpires = emailVerificationExpires;
     await user.save({ validateBeforeSave: false });
 
-    // Générer le JWT
-    const token = user.generateAuthToken();
-    const refreshToken = user.generateRefreshToken();
+    // Ouvrir la session et générer les tokens
+    const { token, refreshToken } = await user.issueTokens();
 
     // Envoyer l'email de vérification
     try {
@@ -141,6 +182,22 @@ const register = async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur inscription:', error);
+
+    // Deux inscriptions simultanées avec le même email : l'index unique tranche
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cet email est déjà utilisé'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        error: Object.values(error.errors).map(e => e.message).join(', ')
+      });
+    }
+
     res.status(500).json({
       success: false,
       error: 'Erreur lors de l\'inscription'
@@ -165,7 +222,7 @@ const login = async (req, res) => {
     const { email, password } = req.body;
 
     // Trouver l'utilisateur avec le mot de passe
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email: { $in: emailCandidates(req) } }).select('+password');
 
     if (!user) {
       return res.status(401).json({
@@ -213,9 +270,8 @@ const login = async (req, res) => {
     user.lastLogin = new Date();
     await user.save({ validateBeforeSave: false });
 
-    // Générer les tokens
-    const token = user.generateAuthToken();
-    const refreshToken = user.generateRefreshToken();
+    // Ouvrir la session et générer les tokens
+    const { token, refreshToken } = await user.issueTokens();
 
     // Charger le profil si existe
     let profile = null;
@@ -272,33 +328,33 @@ const refreshToken = async (req, res) => {
       });
     }
 
+    let decoded;
     try {
-      const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-      const user = await User.findById(decoded.id);
-
-      if (!user || !user.isActive) {
-        return res.status(401).json({
-          success: false,
-          error: 'Utilisateur non trouvé ou désactivé'
-        });
-      }
-
-      const newToken = user.generateAuthToken();
-      const newRefreshToken = user.generateRefreshToken();
-
-      res.json({
-        success: true,
-        data: {
-          token: newToken,
-          refreshToken: newRefreshToken
-        }
-      });
+      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     } catch (jwtError) {
       return res.status(401).json({
         success: false,
         error: 'Refresh token invalide ou expiré'
       });
     }
+
+    // Rotation : chaque refresh token ne sert qu'une fois
+    const rotation = await User.rotateRefreshToken(decoded);
+
+    if (!rotation) {
+      return res.status(401).json({
+        success: false,
+        error: 'Session expirée, veuillez vous reconnecter'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        token: rotation.tokens.token,
+        refreshToken: rotation.tokens.refreshToken
+      }
+    });
   } catch (error) {
     console.error('Erreur refresh token:', error);
     res.status(500).json({
@@ -316,7 +372,7 @@ const verifyEmail = async (req, res) => {
     const { token } = req.params;
 
     const user = await User.findOne({
-      emailVerificationToken: token,
+      emailVerificationToken: tokenLookup(token),
       emailVerificationExpires: { $gt: Date.now() }
     });
 
@@ -350,9 +406,7 @@ const verifyEmail = async (req, res) => {
 // @access  Public
 const forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
-
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: { $in: emailCandidates(req) } });
 
     // Réponse identique que l'utilisateur existe ou non (anti-énumération de comptes)
     if (!user) {
@@ -366,7 +420,7 @@ const forgotPassword = async (req, res) => {
     const resetToken = crypto.randomBytes(32).toString('hex');
     const passwordResetExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    user.passwordResetToken = resetToken;
+    user.passwordResetToken = hashToken(resetToken);
     user.passwordResetExpires = passwordResetExpires;
     await user.save({ validateBeforeSave: false });
 
@@ -413,7 +467,7 @@ const resetPassword = async (req, res) => {
     const { password } = req.body;
 
     const user = await User.findOne({
-      passwordResetToken: token,
+      passwordResetToken: tokenLookup(token),
       passwordResetExpires: { $gt: Date.now() }
     });
 
@@ -428,7 +482,12 @@ const resetPassword = async (req, res) => {
     user.password = password;
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
+    user.loginAttempts = 0;
+    user.lockUntil = null;
     await user.save();
+
+    // Déconnecter tous les appareils : l'ancien mot de passe était peut-être compromis
+    await User.revokeAllSessions(user._id);
 
     res.json({
       success: true,
@@ -448,9 +507,7 @@ const resetPassword = async (req, res) => {
 // @access  Public
 const requestPasswordResetCode = async (req, res) => {
   try {
-    const { email } = req.body;
-
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: { $in: emailCandidates(req) } });
 
     // Réponse identique que l'utilisateur existe ou non (anti-énumération)
     if (!user) {
@@ -461,11 +518,12 @@ const requestPasswordResetCode = async (req, res) => {
     }
 
     // Générer un code à 6 chiffres
-    const resetCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const resetCode = generateSixDigitCode();
     const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     user.passwordResetCode = resetCode;
     user.passwordResetCodeExpires = codeExpires;
+    user.passwordResetCodeAttempts = 0;
     await user.save({ validateBeforeSave: false });
 
     console.log('Debug envoi code reset:', {
@@ -517,29 +575,12 @@ const resetPasswordWithCode = async (req, res) => {
   try {
     const { email, code, newPassword } = req.body;
 
-    const user = await User.findOne({ email }).select('+passwordResetCode +passwordResetCodeExpires');
+    const user = await User.findOne({ email: { $in: emailCandidates(req) } })
+      .select('+passwordResetCode +passwordResetCodeExpires +passwordResetCodeAttempts');
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'Utilisateur non trouvé'
-      });
-    }
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Debug verification reset code:', {
-        receivedEmail: email,
-        receivedCode: code,
-        storedCode: user.passwordResetCode,
-        expiresAt: user.passwordResetCodeExpires,
-      });
-    }
-
-    // Vérifier le code et l'expiration
-    if (!user.passwordResetCode || 
-        user.passwordResetCode !== code ||
-        !user.passwordResetCodeExpires ||
-        user.passwordResetCodeExpires < new Date()) {
+    // Même réponse que le compte existe ou non (anti-énumération) ; le nombre
+    // d'essais est limité pour empêcher de deviner le code par force brute.
+    if (!user || !(await checkPasswordResetCode(user, code))) {
       return res.status(400).json({
         success: false,
         error: 'Code de réinitialisation invalide ou expiré'
@@ -550,10 +591,17 @@ const resetPasswordWithCode = async (req, res) => {
     user.password = newPassword;
     user.passwordResetCode = undefined;
     user.passwordResetCodeExpires = undefined;
+    user.passwordResetCodeAttempts = 0;
+    // Débloquer le compte : le propriétaire vient de prouver son identité
+    user.loginAttempts = 0;
+    user.lockUntil = null;
     // On garde aussi les anciens champs pour compatibilité
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     await user.save();
+
+    // Déconnecter tous les appareils : l'ancien mot de passe était peut-être compromis
+    await User.revokeAllSessions(user._id);
 
     res.json({
       success: true,
@@ -591,19 +639,10 @@ const changePassword = async (req, res) => {
     user.password = newPassword;
     await user.save();
 
-    // Générer un nouveau token JWT pour maintenir la session
-    const token = jwt.sign(
-      { id: user._id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || '7d' }
-    );
-
-    // Générer un nouveau refresh token
-    const refreshToken = jwt.sign(
-      { id: user._id },
-      process.env.JWT_REFRESH_SECRET,
-      { expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d' }
-    );
+    // Fermer toutes les sessions (autres appareils compris) puis en rouvrir une
+    // pour l'appareil courant
+    await User.revokeAllSessions(user._id);
+    const { token, refreshToken } = await user.issueTokens();
 
     res.json({
       success: true,
@@ -687,8 +726,11 @@ const getMe = async (req, res) => {
 // @access  Private
 const logout = async (req, res) => {
   try {
-    // Pour une déconnexion simple, on peut juste retourner success
-    // En production, on pourrait blacklister le token ou utiliser Redis
+    // Fermer la session : l'access token et le refresh token de cet appareil
+    // cessent immédiatement d'être acceptés.
+    if (req.auth?.sid) {
+      await User.revokeSession(req.user._id, req.auth.sid);
+    }
     
     res.json({
       success: true,
@@ -725,7 +767,7 @@ const sendEmailVerificationCode = async (req, res) => {
     }
 
     // Générer un code à 6 chiffres
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = generateSixDigitCode();
     const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     user.emailVerificationCode = verificationCode;
@@ -840,7 +882,7 @@ const sendPhoneVerificationCode = async (req, res) => {
     if (!user.phone) return res.status(400).json({ success: false, error: 'Aucun numéro de téléphone enregistré' });
 
     // Envoyer le code via Africa's Talking
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = generateSixDigitCode();
     const codeExpires = new Date(Date.now() + 10 * 60 * 1000);
     user.phoneVerificationCode = verificationCode;
     user.phoneVerificationCodeExpires = codeExpires;
@@ -889,13 +931,6 @@ const verifyPhoneCode = async (req, res) => {
     user.phoneVerificationCodeExpires = undefined;
     await user.save({ validateBeforeSave: false });
     return res.json({ success: true, message: 'Numéro de téléphone vérifié avec succès' });
-
-    user.isPhoneVerified = true;
-    user.phoneVerificationCode = undefined;
-    user.phoneVerificationCodeExpires = undefined;
-    await user.save({ validateBeforeSave: false });
-
-    res.json({ success: true, message: 'Numéro de téléphone vérifié avec succès' });
   } catch (error) {
     console.error('Erreur verifyPhoneCode:', error);
     res.status(500).json({ success: false, error: 'Erreur lors de la vérification du code' });
@@ -920,11 +955,12 @@ const requestPasswordResetSmsCode = async (req, res) => {
     }
 
     // Générer un code à 6 chiffres
-    const resetCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const resetCode = generateSixDigitCode();
     const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     user.passwordResetCode = resetCode;
     user.passwordResetCodeExpires = codeExpires;
+    user.passwordResetCodeAttempts = 0;
     await user.save({ validateBeforeSave: false });
 
     console.log("Debug envoi code reset SMS:", {
@@ -976,29 +1012,12 @@ const resetPasswordWithSmsCode = async (req, res) => {
   try {
     const { phone, code, newPassword } = req.body;
 
-    const user = await User.findOne({ phone }).select("+passwordResetCode +passwordResetCodeExpires");
+    const user = await User.findOne({ phone })
+      .select('+passwordResetCode +passwordResetCodeExpires +passwordResetCodeAttempts');
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: "Utilisateur non trouvé"
-      });
-    }
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log("Debug verification reset SMS code:", {
-        receivedPhone: phone,
-        receivedCode: code,
-        storedCode: user.passwordResetCode,
-        expiresAt: user.passwordResetCodeExpires,
-      });
-    }
-
-    // Vérifier le code et l'expiration
-    if (!user.passwordResetCode || 
-        user.passwordResetCode !== code ||
-        !user.passwordResetCodeExpires ||
-        user.passwordResetCodeExpires < new Date()) {
+    // Même réponse que le compte existe ou non (anti-énumération) ; le nombre
+    // d'essais est limité pour empêcher de deviner le code par force brute.
+    if (!user || !(await checkPasswordResetCode(user, code))) {
       return res.status(400).json({
         success: false,
         error: "Code de réinitialisation invalide ou expiré"
@@ -1009,10 +1028,17 @@ const resetPasswordWithSmsCode = async (req, res) => {
     user.password = newPassword;
     user.passwordResetCode = undefined;
     user.passwordResetCodeExpires = undefined;
+    user.passwordResetCodeAttempts = 0;
+    // Débloquer le compte : le propriétaire vient de prouver son identité
+    user.loginAttempts = 0;
+    user.lockUntil = null;
     // On garde aussi les anciens champs pour compatibilité
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     await user.save();
+
+    // Déconnecter tous les appareils : l'ancien mot de passe était peut-être compromis
+    await User.revokeAllSessions(user._id);
 
     res.json({
       success: true,

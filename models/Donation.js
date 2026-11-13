@@ -134,6 +134,13 @@ const donationSchema = new mongoose.Schema({
     required: [true, 'La méthode de paiement est requise']
   },
   
+  // Échéance d'un don récurrent : don « abonnement » d'origine et rang de l'échéance
+  recurringParent: {
+    type: mongoose.Schema.ObjectId,
+    ref: 'Donation'
+  },
+  occurrenceNumber: Number,
+
   // Référence au paiement
   payment: {
     type: mongoose.Schema.ObjectId,
@@ -242,6 +249,7 @@ donationSchema.index({ category: 1 });
 donationSchema.index({ createdAt: -1 });
 donationSchema.index({ 'recurring.isActive': 1 });
 donationSchema.index({ 'recurring.nextPaymentDate': 1 });
+donationSchema.index({ recurringParent: 1 }, { sparse: true });
 
 // Index composé pour les dons récurrents actifs
 donationSchema.index({ 
@@ -252,9 +260,11 @@ donationSchema.index({
 
 // Virtual pour le montant formaté
 donationSchema.virtual('formattedAmount').get(function() {
+  // amount/currency peuvent être absents si le document a été chargé avec un select() partiel
+  if (this.amount === undefined || this.amount === null) return undefined;
   const formatter = new Intl.NumberFormat('fr-FR', {
     style: 'currency',
-    currency: this.currency,
+    currency: this.currency || 'XOF',
     minimumFractionDigits: 0
   });
   return formatter.format(this.amount);
@@ -267,7 +277,7 @@ donationSchema.virtual('isPending').get(function() {
 
 // Virtual pour vérifier si c'est un don récurrent actif
 donationSchema.virtual('isActiveRecurring').get(function() {
-  return this.type === 'recurring' && this.recurring.isActive;
+  return this.type === 'recurring' && !!this.recurring?.isActive;
 });
 
 // Middleware pre-save pour générer le numéro de reçu
@@ -290,8 +300,13 @@ donationSchema.pre('save', async function(next) {
 donationSchema.methods.calculateNextPaymentDate = function() {
   if (this.type !== 'recurring' || !this.recurring.isActive) return null;
   
-  const { frequency, interval, dayOfWeek, dayOfMonth, startDate } = this.recurring;
+  const { frequency, dayOfWeek, dayOfMonth, startDate } = this.recurring;
+  const interval = this.recurring.interval || 1;
   let nextDate = moment(this.recurring.nextPaymentDate || startDate);
+
+  // moment.date(31) déborde sur le mois suivant pour les mois plus courts :
+  // on borne au dernier jour du mois (ex. le 31 -> 30 avril, 28/29 février)
+  const setDayOfMonth = (date) => date.date(Math.min(dayOfMonth, date.daysInMonth()));
   
   switch (frequency) {
     case 'daily':
@@ -311,9 +326,9 @@ donationSchema.methods.calculateNextPaymentDate = function() {
     
     case 'monthly':
       if (dayOfMonth) {
-        nextDate.date(dayOfMonth);
+        setDayOfMonth(nextDate);
         if (nextDate.isSameOrBefore(moment())) {
-          nextDate.add(interval, 'months').date(dayOfMonth);
+          setDayOfMonth(nextDate.add(interval, 'months'));
         }
       } else {
         nextDate.add(interval, 'months');
@@ -322,9 +337,9 @@ donationSchema.methods.calculateNextPaymentDate = function() {
     
     case 'quarterly':
       if (dayOfMonth) {
-        nextDate.date(dayOfMonth);
+        setDayOfMonth(nextDate);
         if (nextDate.isSameOrBefore(moment())) {
-          nextDate.add(interval * 3, 'months').date(dayOfMonth);
+          setDayOfMonth(nextDate.add(interval * 3, 'months'));
         }
       } else {
         nextDate.add(interval * 3, 'months');
@@ -333,9 +348,9 @@ donationSchema.methods.calculateNextPaymentDate = function() {
     
     case 'yearly':
       if (dayOfMonth) {
-        nextDate.date(dayOfMonth);
+        setDayOfMonth(nextDate);
         if (nextDate.isSameOrBefore(moment())) {
-          nextDate.add(interval, 'years');
+          setDayOfMonth(nextDate.add(interval, 'years'));
         }
       } else {
         nextDate.add(interval, 'years');

@@ -1,5 +1,6 @@
 const { FusionPay } = require('fusionpay');
 const websocketService = require('./websocketService');
+const { completePayment, failPayment } = require('./paymentCompletionService');
 
 class MoneyFusionService {
   constructor() {
@@ -186,22 +187,22 @@ class MoneyFusionService {
         const response = await payment.checkPaymentStatus(token);
 
         if (response.statut && response.data) {
-          console.log('response', response);
           const paymentData = response.data;
           const isSuccess = paymentData.statut === 'paid';
           const newStatus = this.mapStatus(paymentData.statut);
 
           // Mettre à jour les statuts si un enregistrement de paiement est fourni
           if (paymentRecord) {
+            const previousStatus = paymentRecord.status;
             await this.updatePaymentAndDonationStatus(paymentRecord, paymentData, response);
-          }
 
-          // Notifier via WebSocket si le statut a changé
-          if (paymentRecord && paymentRecord.status !== newStatus) {
-            try {
-              websocketService.notifyPaymentStatusUpdate(paymentRecord, paymentRecord.status, newStatus);
-            } catch (wsError) {
-              console.warn('⚠️ Erreur notification WebSocket:', wsError.message);
+            // Notifier via WebSocket si le statut a changé
+            if (previousStatus !== paymentRecord.status) {
+              try {
+                websocketService.notifyPaymentStatusUpdate(paymentRecord, previousStatus, paymentRecord.status);
+              } catch (wsError) {
+                console.warn('⚠️ Erreur notification WebSocket:', wsError.message);
+              }
             }
           }
 
@@ -248,26 +249,13 @@ class MoneyFusionService {
     // Toutes les tentatives ont échoué
     console.error(`❌ MoneyFusion - Échec définitif après ${this.retryAttempts} tentatives pour token: ${token}`);
     
-    // Notifier l'échec via WebSocket
-    if (paymentRecord) {
-      try {
-        websocketService.notifyPaymentFailed(
-          paymentRecord, 
-          paymentRecord.donation,
-          { 
-            message: `Échec vérification MoneyFusion après ${this.retryAttempts} tentatives`,
-            code: 'VERIFICATION_FAILED',
-            originalError: lastError?.message
-          }
-        );
-      } catch (wsError) {
-        console.warn('⚠️ Erreur notification WebSocket échec:', wsError.message);
-      }
-    }
-
+    // Impossible de joindre MoneyFusion : on ne sait pas si le paiement a abouti.
+    // Le statut reste « pending » (verificationError) pour ne pas marquer en échec
+    // un paiement qui a peut-être été encaissé.
     return {
       success: false,
-      status: 'failed',
+      status: 'pending',
+      verificationError: true,
       message: `Échec de vérification après ${this.retryAttempts} tentatives: ${lastError?.message || 'Erreur inconnue'}`,
       metadata: {
         provider: 'moneyfusion',
@@ -278,134 +266,80 @@ class MoneyFusionService {
   }
 
   /**
-   * Mettre à jour le statut du paiement et de la donation selon la réponse MoneyFusion
+   * Interroger MoneyFusion pour savoir si un paiement est réellement payé.
+   * Utilisé pour valider un webhook « completed » avant de l'appliquer.
    */
-  async updatePaymentAndDonationStatus(paymentRecord, moneyFusionData, originalResponse) {
+  async confirmPaid(token, attempts = 2) {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const response = await new FusionPay(this.apiUrl).checkPaymentStatus(token);
+
+        if (response?.statut && response.data) {
+          return {
+            confirmed: response.data.statut === 'paid',
+            statut: response.data.statut,
+            data: response.data
+          };
+        }
+        lastError = new Error(response?.message || 'Réponse invalide de MoneyFusion');
+      } catch (error) {
+        lastError = error;
+      }
+
+      if (attempt < attempts) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    return { confirmed: false, error: lastError?.message || 'Vérification impossible' };
+  }
+
+  /**
+   * Mettre à jour le statut du paiement et de la donation selon la réponse MoneyFusion.
+   * La finalisation est déléguée à paymentCompletionService (idempotent) : appeler
+   * cette méthode plusieurs fois pour un même paiement ne recompte pas le don.
+   */
+  async updatePaymentAndDonationStatus(paymentRecord, moneyFusionData, originalResponse = {}) {
     try {
       const oldPaymentStatus = paymentRecord.status;
-      
-      // Importer les services nécessaires
-      const emailService = require('./emailService');
-      
-      if (moneyFusionData.statut === 'paid') {
-        // Marquer le paiement comme complété
-        await paymentRecord.markCompleted({
-          moneyfusion: {
-            ...paymentRecord.moneyfusion,
-            status: 'paid',
-            completedAt: new Date(),
-            verificationData: moneyFusionData
+      const statut = moneyFusionData.statut;
+
+      if (statut === 'paid') {
+        const result = await completePayment(paymentRecord, {
+          transactionId: paymentRecord.moneyfusion?.token,
+          source: 'verify_moneyfusion',
+          providerData: {
+            moneyfusion: {
+              status: 'paid',
+              completedAt: new Date(),
+              transactionReference: moneyFusionData.numeroTransaction,
+              paymentMethod: moneyFusionData.moyen,
+              apiResponse: moneyFusionData
+            }
           }
         });
 
-        // Mettre à jour la donation
-        if (paymentRecord.donation) {
-          paymentRecord.donation.status = 'completed';
-          paymentRecord.donation.addToHistory(
-            'updated', 
-            `Statut mis à jour automatiquement via vérification MoneyFusion (${paymentRecord.donation.status} -> completed)`,
-            null,
-            {
-              paymentProvider: 'moneyfusion',
-              paymentStatus: 'paid',
-              verificationSource: 'verify_payment_api'
-            }
-          );
-          await paymentRecord.donation.save();
+        if (!result.alreadyCompleted) {
+          console.log(`💰 Statut paiement mis à jour: ${oldPaymentStatus} -> completed (MoneyFusion: paid)`);
         }
+      } else if (statut === 'failure' || statut === 'failed' || statut === 'no paid') {
+        const result = await failPayment(
+          paymentRecord,
+          originalResponse.message || 'Paiement échoué',
+          { code: 'PAYMENT_FAILED', source: 'verify_moneyfusion' }
+        );
 
-        // Mettre à jour les statistiques utilisateur
-        if (paymentRecord.user) {
-          await paymentRecord.user.updateDonationStats(paymentRecord.amount);
+        if (result.changed) {
+          console.log(`❌ Statut paiement mis à jour: ${oldPaymentStatus} -> failed (MoneyFusion: ${statut})`);
         }
-
-        // Envoyer le reçu par email
-        if (paymentRecord.user && paymentRecord.donation) {
-          try {
-            await emailService.sendDonationReceiptEmail(
-              paymentRecord.user.email,
-              paymentRecord.user.firstName,
-              {
-                receiptNumber: paymentRecord.donation.receipt.number,
-                donorName: `${paymentRecord.user.firstName} ${paymentRecord.user.lastName}`,
-                formattedAmount: paymentRecord.formattedAmount,
-                donationDate: paymentRecord.donation.createdAt,
-                paymentMethod: paymentRecord.paymentMethod,
-                category: paymentRecord.donation.category
-              }
-            );
-          } catch (emailError) {
-            console.error('Erreur envoi reçu par email:', emailError);
-          }
-        }
-        
-        console.log(`💰 Statut paiement mis à jour: ${oldPaymentStatus} -> completed (MoneyFusion: paid)`);
-        
-      } else if (moneyFusionData.statut === 'failure' || moneyFusionData.statut === 'failed' || moneyFusionData.statut === 'no paid') {
-        // Marquer le paiement comme échoué
-        await paymentRecord.markFailed(originalResponse.message || 'Paiement échoué');
-        
-        // Mettre à jour la donation
-        if (paymentRecord.donation) {
-          paymentRecord.donation.status = 'failed';
-          paymentRecord.donation.addToHistory(
-            'updated', 
-            `Statut mis à jour automatiquement via vérification MoneyFusion (${paymentRecord.donation.status} -> failed)`,
-            null,
-            {
-              paymentProvider: 'moneyfusion',
-              paymentStatus: 'failed',
-              verificationSource: 'verify_payment_api',
-              failureReason: originalResponse.message
-            }
-          );
-          await paymentRecord.donation.save();
-        }
-        
-        console.log(`❌ Statut paiement mis à jour: ${oldPaymentStatus} -> failed (MoneyFusion: failed)`);
-        
-      } else if (moneyFusionData.statut === 'pending') {
-        // Mettre à jour explicitement le statut du paiement pour 'pending'
-        if (paymentRecord.status !== 'pending') {
-          paymentRecord.status = 'pending';
-          
-          // Mettre à jour les informations MoneyFusion
-          paymentRecord.moneyfusion = {
-            ...paymentRecord.moneyfusion,
-            status: 'pending',
-            verificationData: moneyFusionData,
-            lastVerifiedAt: new Date()
-          };
-          
-          // Ajouter à l'historique du paiement
-          paymentRecord.addToHistory(
-            'updated', 
-            `Statut mis à jour via vérification MoneyFusion: ${oldPaymentStatus} -> pending`,
-            null,
-            { moneyFusionStatus: 'pending', verificationData: moneyFusionData }
-          );
-          
-          await paymentRecord.save();
-          console.log(`⏳ Statut paiement mis à jour: ${oldPaymentStatus} -> pending (MoneyFusion: pending)`);
-        }
-        
-        // Mettre à jour la donation pour être sûr
-        if (paymentRecord.donation && paymentRecord.donation.status !== 'pending') {
-          paymentRecord.donation.status = 'pending';
-          paymentRecord.donation.addToHistory(
-            'updated', 
-            `Statut mis à jour automatiquement via vérification MoneyFusion (${paymentRecord.donation.status} -> pending)`,
-            null,
-            {
-              paymentProvider: 'moneyfusion',
-              paymentStatus: 'pending',
-              verificationSource: 'verify_payment_api'
-            }
-          );
-          await paymentRecord.donation.save();
-        }
+      } else if (statut === 'pending' && paymentRecord.status === 'pending') {
+        // Paiement encore en attente côté MoneyFusion : on trace seulement la dernière
+        // vérification, sans toucher au statut du paiement ni à celui du don.
+        paymentRecord.set('moneyfusion.status', 'pending');
+        await paymentRecord.save();
       }
-      
     } catch (error) {
       console.error('❌ Erreur mise à jour statuts MoneyFusion:', error);
       throw error;
@@ -592,10 +526,12 @@ class MoneyFusionService {
   async checkPendingPayments(maxAge = 24) { // 24 heures par défaut
     try {
       const Payment = require('../models/Payment');
-      const Donation = require('../models/Donation');
       
       // Trouver les paiements MoneyFusion en attente depuis plus de maxAge heures
       const cutoffDate = new Date(Date.now() - (maxAge * 60 * 60 * 1000));
+      // Au-delà de ce délai, un paiement toujours en attente chez le fournisseur est considéré expiré
+      const expiryHours = Math.max(parseInt(process.env.PAYMENT_EXPIRY_HOURS, 10) || 24, maxAge);
+      const expiryCutoff = new Date(Date.now() - (expiryHours * 60 * 60 * 1000));
       
       const pendingPayments = await Payment.find({
         provider: 'moneyfusion',
@@ -625,90 +561,29 @@ class MoneyFusionService {
             continue;
           }
           
+          // verifyPayment met déjà à jour le paiement, le don et les statistiques
+          // (via paymentCompletionService) : ne rien refaire ici, seulement compter.
           const verificationResult = await this.verifyPayment(token, payment);
-          
-          if (verificationResult.success && verificationResult.status === 'completed') {
-            // Marquer comme complété
-            await payment.markCompleted({
-              moneyfusion: {
-                ...payment.moneyfusion,
-                status: 'completed',
-                completedAt: new Date(),
-                verificationData: verificationResult
-              }
-            });
 
-            // Mettre à jour la donation
-            if (payment.donation) {
-              const oldDonationStatus = payment.donation.status;
-              payment.donation.status = 'completed';
-              
-              // Ajouter à l'historique de la donation
-              payment.donation.addToHistory(
-                'updated', 
-                `Statut mis à jour automatiquement via vérification MoneyFusion (${oldDonationStatus} -> completed)`,
-                null,
-                {
-                  paymentProvider: 'moneyfusion',
-                  paymentStatus: 'paid',
-                  verificationSource: 'auto_check'
-                }
-              );
-              
-              await payment.donation.save();
-
-              // Mettre à jour les stats utilisateur
-              if (payment.user) {
-                await payment.user.updateDonationStats(payment.amount);
-              }
-
-              // Notifier via WebSocket
-              websocketService.notifyPaymentCompleted(payment, payment.donation);
-            }
-
+          if (verificationResult.verificationError) {
+            results.errors++;
+            console.warn(`⚠️ Paiement ${payment._id}: MoneyFusion injoignable, statut inchangé`);
+          } else if (verificationResult.status === 'completed') {
             results.completed++;
             console.log(`✅ Paiement ${payment._id} marqué comme complété`);
-            
           } else if (verificationResult.status === 'failed') {
-            // Marquer comme échoué
-            await payment.markFailed(
-              verificationResult.message || 'Paiement échoué selon MoneyFusion',
-              'PAYMENT_FAILED'
-            );
-
-            // Mettre à jour la donation
-            if (payment.donation) {
-              const oldDonationStatus = payment.donation.status;
-              payment.donation.status = 'failed';
-              
-              // Ajouter à l'historique de la donation
-              payment.donation.addToHistory(
-                'updated', 
-                `Statut mis à jour automatiquement via vérification MoneyFusion (${oldDonationStatus} -> failed)`,
-                null,
-                {
-                  paymentProvider: 'moneyfusion',
-                  paymentStatus: 'failed',
-                  verificationSource: 'auto_check',
-                  failureReason: verificationResult.message
-                }
-              );
-              
-              await payment.donation.save();
-
-              // Notifier via WebSocket
-              websocketService.notifyPaymentFailed(
-                payment, 
-                payment.donation,
-                { 
-                  message: verificationResult.message,
-                  code: 'PAYMENT_VERIFICATION_FAILED'
-                }
-              );
-            }
-
             results.failed++;
             console.log(`❌ Paiement ${payment._id} marqué comme échoué`);
+          } else if (payment.createdAt < expiryCutoff) {
+            // Le fournisseur a répondu mais le paiement n'a jamais été finalisé :
+            // on le clôt pour qu'il ne soit pas revérifié indéfiniment.
+            await failPayment(payment, 'Paiement expiré (non finalisé dans le délai imparti)', {
+              status: 'expired',
+              code: 'PAYMENT_EXPIRED',
+              source: 'cron_moneyfusion'
+            });
+            results.failed++;
+            console.log(`⌛ Paiement ${payment._id} expiré`);
           }
           
         } catch (error) {

@@ -414,3 +414,23 @@ L'intégration CinetPay est conforme à leur documentation officielle v2 :
 - ✅ **Canaux multiples** : ALL, MOBILE_MONEY, CREDIT_CARD, WALLET
 - ✅ **Webhooks complets** : Traitement de tous les statuts
 - ✅ **Gestion d'erreurs** : Codes d'erreur selon documentation
+## 🧪 Tests
+
+```bash
+npm test
+```
+
+Les tests d'intégration (`tests/`) tournent sur une base MongoDB en mémoire (`mongodb-memory-server`, téléchargée au premier lancement). Le fichier `.env` n'est pas chargé, les e-mails/SMS sont capturés et toute sortie réseau vers un fournisseur est bloquée.
+
+## ⚙️ Variables d'environnement optionnelles
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `PAYMENT_EXPIRY_HOURS` | `24` | Délai après lequel un paiement jamais finalisé est marqué `expired` |
+| `PAYPAL_WEBHOOK_ID` | — | Active la vérification de signature des webhooks PayPal |
+| `USD_TO_XOF_RATE` | `600` | Taux utilisé pour convertir les dons en USD dans les statistiques (l'EUR utilise la parité fixe 655,957) |
+| `RATE_LIMIT_MAX_REQUESTS` | `300` | Requêtes autorisées par IP et par fenêtre de 15 minutes |
+
+## 🔁 Dons récurrents
+
+Chaque échéance d'un don récurrent crée un don distinct « en attente » (champ `recurringParent`) que le donateur règle par le parcours de paiement habituel ; il est prévenu par e-mail (et SMS s'il l'a activé). La tâche tourne tous les jours à 8h (`services/recurringDonationService.js`) et peut être déclenchée par `POST /api/donations/process-recurring` (admin/trésorier) — utile si l'hébergement n'a pas de processus permanent.

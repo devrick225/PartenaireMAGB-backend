@@ -3,6 +3,8 @@ const moneyFusionService = require('./moneyFusionService');
 const fusionPayService = require('./fusionPayService');
 const geniusPayService = require('./geniusPayService');
 const paymentService = require('./paymentService');
+const { amountInXofExpr } = require('../utils/currency');
+const { processDueRecurringDonations } = require('./recurringDonationService');
 
 class CronJobsService {
   constructor() {
@@ -21,6 +23,7 @@ class CronJobsService {
 
     this.setupPaymentVerificationJob();
     this.setupDonationStatsJob();
+    this.setupRecurringDonationsJob();
     this.setupCleanupJob();
     
     this.isInitialized = true;
@@ -111,7 +114,7 @@ class CronJobsService {
           {
             $group: {
               _id: '$user',
-              totalAmount: { $sum: '$amount' },
+              totalAmount: { $sum: amountInXofExpr() },
               donationCount: { $sum: 1 }
             }
           }
@@ -128,14 +131,17 @@ class CronJobsService {
 
         // Mettre à jour en bulk avec bulkWrite
         const bulkOps = [];
-        const users = await User.find({}).select('_id totalDonations donationCount points level');
+        const users = await User.find({}).select('_id totalDonations donationCount points level partnerLevel');
         
         for (const user of users) {
           const stats = statsMap.get(user._id.toString()) || { totalAmount: 0, donationCount: 0 };
           const currentTotal = isNaN(user.totalDonations) ? 0 : user.totalDonations;
           const currentCount = isNaN(user.donationCount) ? 0 : user.donationCount;
 
-          if (currentTotal !== stats.totalAmount || currentCount !== stats.donationCount) {
+          // Le niveau de partenaire dépend du total : le recalculer avec lui
+          const partnerLevel = User.partnerLevelFor(stats.totalAmount);
+
+          if (currentTotal !== stats.totalAmount || currentCount !== stats.donationCount || user.partnerLevel !== partnerLevel) {
             bulkOps.push({
               updateOne: {
                 filter: { _id: user._id },
@@ -143,6 +149,7 @@ class CronJobsService {
                   $set: {
                     totalDonations: stats.totalAmount,
                     donationCount: stats.donationCount,
+                    partnerLevel,
                     points: isNaN(user.points) ? 0 : user.points,
                     level: isNaN(user.level) ? 1 : user.level
                   }
@@ -158,15 +165,6 @@ class CronJobsService {
           updatedUsers = result.modifiedCount;
         }
 
-        // Traiter les dons récurrents dus
-        try {
-          const dueToday = await Donation.getDueToday();
-          console.log(`📅 ${dueToday.length} dons récurrents dus aujourd'hui`);
-          // TODO: Traiter les dons récurrents
-        } catch (error) {
-          console.error('❌ Erreur traitement dons récurrents:', error.message);
-        }
-
         console.log(`📊 [CRON] Statistiques mises à jour - ${updatedUsers} utilisateurs modifiés`);
 
       } catch (error) {
@@ -180,6 +178,31 @@ class CronJobsService {
     this.jobs.set('donationStats', job);
     job.start();
     console.log('✅ Tâche cron statistiques activée (quotidien 3h)');
+  }
+
+  // Échéances des dons récurrents (quotidien à 8h) : création du don à régler + rappel au donateur
+  setupRecurringDonationsJob() {
+    const job = cron.schedule('0 8 * * *', async () => {
+      try {
+        console.log('📅 [CRON] Début traitement des dons récurrents...');
+        const results = await processDueRecurringDonations();
+        console.log('📅 [CRON] Dons récurrents traités:', results);
+      } catch (error) {
+        console.error('❌ [CRON] Erreur dons récurrents:', error);
+      }
+    }, {
+      scheduled: false,
+      timezone: "Africa/Abidjan"
+    });
+
+    this.jobs.set('recurringDonations', job);
+    job.start();
+    console.log('✅ Tâche cron dons récurrents activée (quotidien 8h)');
+  }
+
+  // Déclenchement manuel (admin, ou planificateur externe si l'hébergement n'a pas de processus permanent)
+  async runRecurringDonationsNow() {
+    return processDueRecurringDonations();
   }
 
   // Nettoyage des données anciennes (hebdomadaire)
@@ -223,9 +246,27 @@ class CronJobsService {
     console.log('🔍 Vérification manuelle des paiements...');
     
     try {
-      const mfResults = await moneyFusionService.checkPendingPayments(24);
+      // 0 = vérifier tous les paiements en attente, quel que soit leur âge
+      const mfResults = await moneyFusionService.checkPendingPayments(0);
       console.log('✅ Vérification manuelle MoneyFusion terminée:', mfResults);
-      return mfResults;
+
+      let gpResults = { checked: 0, completed: 0, failed: 0, errors: 0 };
+      try {
+        gpResults = await geniusPayService.checkPendingPayments(0);
+        console.log('✅ Vérification manuelle GeniusPay terminée:', gpResults);
+      } catch (error) {
+        console.error('❌ Erreur vérification manuelle GeniusPay:', error.message);
+        gpResults.errors++;
+      }
+
+      return {
+        checked: mfResults.checked + gpResults.checked,
+        completed: mfResults.completed + gpResults.completed,
+        failed: mfResults.failed + gpResults.failed,
+        errors: mfResults.errors + gpResults.errors,
+        moneyfusion: mfResults,
+        geniuspay: gpResults
+      };
     } catch (error) {
       console.error('❌ Erreur vérification manuelle:', error);
       throw error;

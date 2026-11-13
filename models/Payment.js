@@ -340,7 +340,8 @@ const paymentSchema = new mongoose.Schema({
       type: String,
       enum: [
         'created', 'initiated', 'processing', 'completed', 
-        'failed', 'cancelled', 'refunded', 'webhook_received', 'updated'
+        'failed', 'cancelled', 'refunded', 'webhook_received', 'updated',
+        'info', 'callback_received', 'expired'
       ]
     },
     description: String,
@@ -448,6 +449,7 @@ paymentSchema.index({ 'fusionpay.reference': 1 });
 paymentSchema.index({ 'moneyfusion.token': 1 });
 paymentSchema.index({ 'moneyfusion.transactionReference': 1 });
 paymentSchema.index({ 'geniuspay.reference': 1 });
+paymentSchema.index({ 'paydunya.token': 1 });
 paymentSchema.index({ createdAt: -1 });
 
 // Index composé pour les requêtes fréquentes
@@ -455,9 +457,11 @@ paymentSchema.index({ status: 1, provider: 1, createdAt: -1 });
 
 // Virtual pour le montant formaté
 paymentSchema.virtual('formattedAmount').get(function() {
+  // amount/currency peuvent être absents si le document a été chargé avec un select() partiel
+  if (this.amount === undefined || this.amount === null) return undefined;
   const formatter = new Intl.NumberFormat('fr-FR', {
     style: 'currency',
-    currency: this.currency,
+    currency: this.currency || 'XOF',
     minimumFractionDigits: 0
   });
   return formatter.format(this.amount);
@@ -470,7 +474,8 @@ paymentSchema.virtual('isPending').get(function() {
 
 // Virtual pour calculer le montant net (après frais)
 paymentSchema.virtual('netAmount').get(function() {
-  return this.amount - (this.fees.processingFee || 0) - (this.fees.platformFee || 0);
+  if (this.amount === undefined || this.amount === null) return undefined;
+  return this.amount - (this.fees?.processingFee || 0) - (this.fees?.platformFee || 0);
 });
 
 // Middleware pre-save pour générer la référence
@@ -520,33 +525,30 @@ paymentSchema.methods.addToHistory = function(action, description, performedBy =
 };
 
 // Méthode pour marquer comme complété
+// NB: pour finaliser un paiement confirmé par un fournisseur (mise à jour du don,
+// des statistiques et envoi du reçu), utiliser services/paymentCompletionService.
 paymentSchema.methods.markCompleted = function(transactionData = {}) {
   this.status = 'completed';
   this.transaction.completedAt = new Date();
   
-  // Mettre à jour les données spécifiques au fournisseur
-  if (transactionData.cinetpay) {
-    Object.assign(this.cinetpay, transactionData.cinetpay);
-  }
-  if (transactionData.stripe) {
-    Object.assign(this.stripe, transactionData.stripe);
-  }
-  if (transactionData.paypal) {
-    Object.assign(this.paypal, transactionData.paypal);
-  }
-  if (transactionData.fusionpay) {
-    Object.assign(this.fusionpay, transactionData.fusionpay);
-  }
-  if (transactionData.mobileMoney) {
-    Object.assign(this.mobileMoney, transactionData.mobileMoney);
-  }
+  // Mettre à jour les données spécifiques au fournisseur (tous fournisseurs confondus)
+  Object.entries(transactionData || {}).forEach(([provider, data]) => {
+    if (!data || typeof data !== 'object' || !this.schema.nested[provider]) return;
+    Object.entries(data).forEach(([key, value]) => {
+      if (value !== undefined) this.set(`${provider}.${key}`, value);
+    });
+  });
   
-  this.addToHistory('completed', 'Paiement complété avec succès', null, transactionData);
+  this.addToHistory('completed', 'Paiement complété avec succès');
   return this.save();
 };
 
 // Méthode pour marquer comme échoué
 paymentSchema.methods.markFailed = function(reason, errorCode = null) {
+  // Un paiement encaissé ou remboursé ne doit jamais repasser en échec
+  if (['completed', 'refunded', 'partially_refunded'].includes(this.status)) {
+    return Promise.resolve(this);
+  }
   this.status = 'failed';
   this.transaction.failureReason = reason;
   this.addAttempt('failed', errorCode, reason);

@@ -60,9 +60,13 @@ app.use(logger);
 // Rate limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+  // 300 par défaut : une assemblée entière peut partager la même IP (Wi-Fi de l'église)
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 300,
   standardHeaders: true,
   legacyHeaders: false,
+  // Les webhooks viennent des serveurs des fournisseurs de paiement (une seule IP,
+  // notifications répétées) : les limiter ferait perdre des confirmations de paiement.
+  skip: (req) => req.path.startsWith('/webhooks/'),
   message: {
     success: false,
     error: 'Trop de requêtes, veuillez réessayer plus tard.'
@@ -75,6 +79,10 @@ const authLimiter = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
+  // Ne limiter que les routes sensibles (connexion, inscription, codes, réinitialisation).
+  // /me, /refresh et /logout sont appelées à chaque ouverture de l'application : les
+  // compter bloquait les utilisateurs légitimes avec « Trop de tentatives de connexion ».
+  skip: (req) => ['/me', '/refresh', '/logout'].includes(req.path),
   message: {
     success: false,
     error: 'Trop de tentatives de connexion, veuillez réessayer dans 15 minutes.'
@@ -84,7 +92,16 @@ const authLimiter = rateLimit({
 app.use('/api/', limiter);
 
 // Parsing des données
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  // Conserver le body brut des webhooks : la vérification de signature (Stripe,
+  // FusionPay, GeniusPay) se fait sur les octets reçus, pas sur le JSON re-sérialisé.
+  verify: (req, res, buf) => {
+    if (req.originalUrl.startsWith('/api/webhooks/')) {
+      req.rawBody = buf;
+    }
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Routes principales
@@ -130,6 +147,11 @@ app.use(errorHandler);
 // Connexion à MongoDB
 const connectDB = async () => {
   try {
+    const missingEnv = ['MONGODB_URI', 'JWT_SECRET', 'JWT_REFRESH_SECRET'].filter(name => !process.env[name]);
+    if (missingEnv.length > 0) {
+      throw new Error(`Variables d'environnement manquantes: ${missingEnv.join(', ')}`);
+    }
+
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
       // Options supprimées car dépréciées dans les versions récentes du driver MongoDB
     });
@@ -148,7 +170,6 @@ const startServer = async () => {
   
   const server = app.listen(PORT, () => {
     console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-    console.log(`📖 Documentation API: http://localhost:${PORT}/api-docs`);
     console.log(`🏥 Health check: http://localhost:${PORT}/health`);
   });
 
@@ -184,6 +205,12 @@ const startServer = async () => {
       console.log('Connexion MongoDB fermée.');
       process.exit(0);
     });
+
+    // Si des connexions restent ouvertes, ne pas bloquer l'arrêt indéfiniment
+    setTimeout(() => {
+      console.error('Arrêt forcé après 10s.');
+      process.exit(1);
+    }, 10000).unref();
   };
 
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

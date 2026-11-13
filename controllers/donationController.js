@@ -1,3 +1,4 @@
+const { amountInXofExpr } = require('../utils/currency');
 const { validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 const Donation = require('../models/Donation');
@@ -30,8 +31,8 @@ const getDonations = async (req, res) => {
 
     // Options de pagination
     const options = {
-      page: parseInt(page),
-      limit: parseInt(limit),
+      page: Math.max(parseInt(page, 10) || 1, 1),
+      limit: Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50),
       sort: { createdAt: -1 },
       populate: [
         { path: 'payment', select: 'status provider amount currency' },
@@ -103,22 +104,40 @@ const createDonation = async (req, res) => {
     };
 
     // Configuration pour les dons récurrents
-    if (type === 'recurring' && recurring) {
+    if (type === 'recurring') {
+      if (!recurring || !recurring.frequency) {
+        return res.status(400).json({
+          success: false,
+          error: 'La configuration du don récurrent est requise (fréquence, date de début)'
+        });
+      }
+
+      const startDate = recurring.startDate ? new Date(recurring.startDate) : new Date();
+      const usesDayOfMonth = ['monthly', 'quarterly', 'yearly'].includes(recurring.frequency);
+
       donationData.recurring = {
         frequency: recurring.frequency,
         interval: recurring.interval || 1,
-        startDate: recurring.startDate || new Date(),
+        startDate,
         endDate: recurring.endDate,
         maxOccurrences: recurring.maxOccurrences,
-        dayOfWeek: recurring.dayOfWeek,
-        dayOfMonth: recurring.dayOfMonth,
+        // Le schéma exige le jour : par défaut, celui de la date de début
+        dayOfWeek: recurring.dayOfWeek ?? (recurring.frequency === 'weekly' ? startDate.getDay() : undefined),
+        dayOfMonth: recurring.dayOfMonth ?? (usesDayOfMonth ? startDate.getDate() : undefined),
         isActive: true
       };
 
       // Calculer la prochaine date de paiement
-      const donation = new Donation(donationData);
-      donation.calculateNextPaymentDate();
-      donationData.recurring.nextPaymentDate = donation.recurring.nextPaymentDate;
+      const draft = new Donation(donationData);
+      const nextPaymentDate = draft.calculateNextPaymentDate();
+
+      if (!nextPaymentDate) {
+        return res.status(400).json({
+          success: false,
+          error: 'La date de fin doit laisser le temps à au moins une échéance'
+        });
+      }
+      donationData.recurring.nextPaymentDate = nextPaymentDate;
     }
 
     const donation = await Donation.create(donationData);
@@ -160,6 +179,16 @@ const createDonation = async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur createDonation:', error);
+
+    // Données refusées par le schéma : erreur du client, pas du serveur
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: Object.values(error.errors).map(e => ({ path: e.path, msg: e.message }))
+      });
+    }
+
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la création du don'
@@ -360,9 +389,9 @@ const getDonationStats = async (req, res) => {
         {
           $group: {
             _id: null,
-            totalAmount: { $sum: '$amount' },
+            totalAmount: { $sum: amountInXofExpr() },
             totalCount: { $sum: 1 },
-            averageAmount: { $avg: '$amount' }
+            averageAmount: { $avg: amountInXofExpr() }
           }
         }
       ]);
@@ -374,7 +403,7 @@ const getDonationStats = async (req, res) => {
           $group: {
             _id: '$category',
             count: { $sum: 1 },
-            totalAmount: { $sum: '$amount' }
+            totalAmount: { $sum: amountInXofExpr() }
           }
         },
         { $sort: { totalAmount: -1 } }
@@ -390,7 +419,7 @@ const getDonationStats = async (req, res) => {
               month: { $month: '$createdAt' }
             },
             count: { $sum: 1 },
-            totalAmount: { $sum: '$amount' }
+            totalAmount: { $sum: amountInXofExpr() }
           }
         },
         { $sort: { '_id.year': 1, '_id.month': 1 } },
@@ -411,6 +440,8 @@ const getDonationStats = async (req, res) => {
             totalAmount: generalStats?.totalAmount || 0,
             totalCount: generalStats?.totalCount || 0,
             averageAmount: generalStats?.averageAmount || 0,
+            // Montants convertis en XOF (dons en EUR / USD inclus)
+            currency: 'XOF',
             activeRecurringDonations: activeRecurringCount,
             categoriesBreakdown: categoryStats,
             monthlyEvolution: monthlyStats
@@ -497,65 +528,6 @@ const updateDonation = async (req, res) => {
   }
 };
 
-// @desc    Traiter les dons récurrents dus
-// @route   GET /api/donations/process-recurring (tâche cron)
-// @access  Private (System)
-const processRecurringDonations = async () => {
-  try {
-    const dueToday = await Donation.getDueToday();
-
-    for (const donation of dueToday) {
-      try {
-        // Créer un nouveau paiement pour le don récurrent
-        // Utiliser 'moneyfusion' comme provider par défaut pour les récurrents
-        // car 'auto_recurring' n'est pas une valeur valide dans le schéma Payment
-        const recurringProvider = donation.provider || 'moneyfusion';
-        const newPayment = await Payment.create({
-          user: donation.user._id,
-          donation: donation._id,
-          amount: donation.amount,
-          currency: donation.currency,
-          paymentMethod: donation.paymentMethod,
-          provider: recurringProvider,
-          status: 'processing'
-        });
-
-        // Marquer le don récurrent comme exécuté
-        await donation.markRecurringExecuted();
-
-        console.log(`Don récurrent traité: ${donation._id} pour ${donation.amount} ${donation.currency}`);
-
-        // Envoyer notification par email
-        try {
-          await emailService.sendRecurringDonationReminder(
-            donation.user.email,
-            donation.user.firstName,
-            {
-              formattedAmount: donation.formattedAmount,
-              frequency: donation.recurring.frequency,
-              nextPaymentDate: donation.recurring.nextPaymentDate,
-              category: donation.category
-            }
-          );
-        } catch (emailError) {
-          console.error('Erreur envoi email rappel don récurrent:', emailError);
-        }
-
-      } catch (processingError) {
-        console.error(`Erreur traitement don récurrent ${donation._id}:`, processingError);
-        
-        // Ajouter à l'historique d'erreur
-        donation.addToHistory('failed', `Erreur traitement automatique: ${processingError.message}`);
-        await donation.save();
-      }
-    }
-
-    return { processed: dueToday.length };
-  } catch (error) {
-    console.error('Erreur processRecurringDonations:', error);
-    throw error;
-  }
-}
 // @desc    Obtenir les donations récurrentes
 // @route   GET /api/donations/recurring
 // @access  Private
@@ -572,8 +544,8 @@ const getRecurringDonations = async (req, res) => {
   
       // Options de pagination
       const options = {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: Math.max(parseInt(page, 10) || 1, 1),
+        limit: Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50),
         sort: { createdAt: -1 },
         populate: [
           { path: 'user', select: 'firstName lastName email' }
@@ -706,6 +678,5 @@ module.exports = {
   getDonationStats,
   updateDonation,
   updateDonationStatus,
-  processRecurringDonations,
   getRecurringDonations
 }; 

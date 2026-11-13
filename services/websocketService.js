@@ -53,8 +53,8 @@ class WebSocketService {
       }
 
       // Vérifier que l'utilisateur existe
-      const user = await User.findById(userId);
-      if (!user || user._id.toString() !== decoded.id) {
+      const user = await User.findById(userId).select('+sessions +passwordChangedAt');
+      if (!user || user._id.toString() !== decoded.id || !user.isActive || !user.acceptsToken(decoded)) {
         console.warn('⚠️ Utilisateur invalide pour WebSocket:', userId);
         ws.close(1008, 'Utilisateur invalide');
         return;
@@ -141,7 +141,7 @@ class WebSocketService {
   }
 
   // Gérer l'abonnement à un canal
-  handleSubscribe(ws, data) {
+  async handleSubscribe(ws, data) {
     const { channel, paymentId, donationId } = data;
 
     if (!channel) {
@@ -153,7 +153,14 @@ class WebSocketService {
     }
 
     // Vérifier les permissions selon le canal
-    if (!this.checkChannelPermissions(ws, channel, data)) {
+    let allowed = false;
+    try {
+      allowed = await this.checkChannelPermissions(ws, channel, data);
+    } catch (error) {
+      console.error('❌ Erreur vérification permissions canal:', error.message);
+    }
+
+    if (!allowed) {
       this.sendToSocket(ws, {
         type: 'error',
         payload: { message: 'Permissions insuffisantes pour ce canal' }
@@ -215,7 +222,7 @@ class WebSocketService {
   }
 
   // Vérifier les permissions d'accès à un canal
-  checkChannelPermissions(ws, channel, data) {
+  async checkChannelPermissions(ws, channel, data) {
     const userId = ws.userId;
     const userRole = ws.user.role;
 
@@ -226,9 +233,25 @@ class WebSocketService {
 
     // Canal spécifique à un paiement
     if (channel.startsWith('payment:')) {
-      const paymentId = channel.split(':')[1];
-      // TODO: Vérifier que l'utilisateur a accès à ce paiement
-      return true; // Pour l'instant, autorisé
+      // Le canal est identifié par l'id du paiement ou par la référence du fournisseur
+      // (token MoneyFusion, référence GeniusPay…) : seul le propriétaire ou le staff y a accès.
+      const key = channel.slice('payment:'.length);
+      if (!key) return false;
+      if (['admin', 'moderator', 'treasurer'].includes(userRole)) return true;
+
+      const mongoose = require('mongoose');
+      const Payment = require('../models/Payment');
+      const conditions = [
+        { 'moneyfusion.token': key },
+        { 'geniuspay.reference': key },
+        { 'fusionpay.transactionId': key },
+        { 'cinetpay.transactionId': key },
+        { 'paydunya.token': key },
+        { 'transaction.externalId': key }
+      ];
+      if (mongoose.Types.ObjectId.isValid(key)) conditions.push({ _id: key });
+
+      return !!(await Payment.exists({ user: userId, $or: conditions }));
     }
 
     // Canaux administrateurs

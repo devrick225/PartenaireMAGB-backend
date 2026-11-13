@@ -18,13 +18,24 @@ const authenticateToken = async (req, res, next) => {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      // Récupérer l'utilisateur complet
-      const user = await User.findById(decoded.id).select('+password');
+      // Récupérer l'utilisateur (sans le hash du mot de passe : les contrôleurs qui en
+      // ont besoin le rechargent explicitement avec select('+password'))
+      const user = await User.findById(decoded.id).select('+sessions +passwordChangedAt');
       
       if (!user) {
         return res.status(401).json({
           success: false,
           error: 'Token invalide - utilisateur non trouvé'
+        });
+      }
+
+      // Session fermée (déconnexion, changement de mot de passe) : le token n'est plus valable.
+      // Même code que l'expiration pour que les clients tentent un refresh puis reconnectent.
+      if (!user.acceptsToken(decoded)) {
+        return res.status(401).json({
+          success: false,
+          error: 'Session expirée, veuillez vous reconnecter',
+          code: 'TOKEN_EXPIRED'
         });
       }
 
@@ -44,12 +55,16 @@ const authenticateToken = async (req, res, next) => {
 
       // Mettre à jour la dernière connexion (sans bloquer la requête)
       // Utiliser updateOne pour éviter un save() complet sur chaque requête
-      User.updateOne(
-        { _id: user._id },
-        { $set: { lastLogin: new Date() } }
-      ).catch(err => console.error('Erreur mise à jour lastLogin:', err));
+      // Au plus une écriture toutes les 5 minutes par utilisateur
+      if (!user.lastLogin || Date.now() - user.lastLogin.getTime() > 5 * 60 * 1000) {
+        User.updateOne(
+          { _id: user._id },
+          { $set: { lastLogin: new Date() } }
+        ).catch(err => console.error('Erreur mise à jour lastLogin:', err));
+      }
 
       req.user = user;
+      req.auth = { sid: decoded.sid || null };
       next();
     } catch (jwtError) {
       if (jwtError.name === 'TokenExpiredError') {
@@ -134,10 +149,11 @@ const optionalAuth = async (req, res, next) => {
 
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id);
+      const user = await User.findById(decoded.id).select('+sessions +passwordChangedAt');
       
-      if (user && user.isActive && !user.isLocked) {
+      if (user && user.isActive && !user.isLocked && user.acceptsToken(decoded)) {
         req.user = user;
+        req.auth = { sid: decoded.sid || null };
       }
     } catch (jwtError) {
       // Ignorer les erreurs de token pour l'auth optionnelle

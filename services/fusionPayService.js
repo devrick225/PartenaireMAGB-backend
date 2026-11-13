@@ -142,10 +142,12 @@ class FusionPayService {
         };
       }
     } catch (error) {
+      // Erreur technique : on ne sait rien du paiement, il reste en attente
       console.error('Erreur FusionPay verifyPayment:', error.response?.data || error.message);
       return {
         success: false,
-        status: 'failed',
+        status: 'pending',
+        verificationError: true,
         message: error.response?.data?.message || error.message
       };
     }

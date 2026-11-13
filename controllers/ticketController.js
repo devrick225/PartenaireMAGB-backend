@@ -809,8 +809,9 @@ const getTicketStats = async (req, res) => {
     // Filtrer selon le rôle de l'utilisateur
     const baseFilter = { ...dateFilter };
     if (!isAdmin) {
-      // Utilisateur normal : seulement ses propres tickets
-      baseFilter.user = req.user.id;
+      // Utilisateur normal : seulement ses propres tickets.
+      // aggregate() ne convertit pas les chaînes en ObjectId : passer l'ObjectId directement.
+      baseFilter.user = req.user._id;
     }
 
     // Statistiques générales

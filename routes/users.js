@@ -45,7 +45,8 @@ const updateProfileValidation = [
     .withMessage('Email invalide'),
   body('phone')
     .optional()
-    .matches(/^\+?[1-9]\d{1,14}$/)
+    // Même format que le modèle User : les numéros locaux commençant par 0 sont valides
+    .matches(/^\+?[0-9]\d{7,14}$/)
     .withMessage('Numéro de téléphone invalide'),
 
   // Profil personnel
@@ -136,7 +137,7 @@ const updateProfileValidation = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) return true;
-      return /^\+?[1-9]\d{1,14}$/.test(value);
+      return /^\+?[0-9]\d{7,14}$/.test(value);
     })
     .withMessage('Téléphone du contact d\'urgence invalide'),
   body('emergencyContact.email')

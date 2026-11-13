@@ -23,6 +23,15 @@ const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Conserver l'email tel que saisi avant sa normalisation par express-validator
+// (voir emailCandidates dans authController)
+const keepRawEmail = (req, res, next) => {
+  if (req.body && typeof req.body.email === 'string') {
+    req.rawEmail = req.body.email;
+  }
+  next();
+};
+
 // Validations
 const registerValidation = [
   body('firstName')
@@ -114,13 +123,13 @@ const resetPasswordWithCodeValidation = [
 
 const requestPasswordResetSmsCodeValidation = [
   body('phone')
-    .matches(/^\+?[1-9]\d{1,14}$/)
+    .matches(/^\+?[0-9]\d{7,14}$/)
     .withMessage('Numéro de téléphone invalide')
 ];
 
 const resetPasswordWithSmsCodeValidation = [
   body('phone')
-    .matches(/^\+?[1-9]\d{1,14}$/)
+    .matches(/^\+?[0-9]\d{7,14}$/)
     .withMessage('Numéro de téléphone invalide'),
   body('code')
     .isLength({ min: 6, max: 6 })
@@ -135,15 +144,15 @@ const resetPasswordWithSmsCodeValidation = [
 
 // Routes publiques
 router.post('/register', registerValidation, register);
-router.post('/login', loginValidation, login);
+router.post('/login', keepRawEmail, loginValidation, login);
 router.post('/refresh', refreshToken);
 router.get('/verify-email/:token', verifyEmail);
-router.post('/forgot-password', forgotPasswordValidation, forgotPassword);
+router.post('/forgot-password', keepRawEmail, forgotPasswordValidation, forgotPassword);
 router.post('/reset-password/:token', resetPasswordValidation, resetPassword);
 
 // Nouvelles routes pour réinitialisation avec codes (pour mobile)
-router.post('/request-password-reset-code', requestPasswordResetCodeValidation, requestPasswordResetCode);
-router.post('/reset-password-with-code', resetPasswordWithCodeValidation, resetPasswordWithCode);
+router.post('/request-password-reset-code', keepRawEmail, requestPasswordResetCodeValidation, requestPasswordResetCode);
+router.post('/reset-password-with-code', keepRawEmail, resetPasswordWithCodeValidation, resetPasswordWithCode);
 
 // Nouvelles routes pour réinitialisation par SMS
 router.post('/request-password-reset-sms-code', requestPasswordResetSmsCodeValidation, requestPasswordResetSmsCode);

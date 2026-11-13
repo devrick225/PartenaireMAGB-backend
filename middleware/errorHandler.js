@@ -18,11 +18,26 @@ const errorHandler = (err, req, res, next) => {
 
   // Erreur de duplication MongoDB (code 11000)
   if (err.code === 11000) {
-    const field = Object.keys(err.keyValue)[0];
-    const value = err.keyValue[field];
+    const field = Object.keys(err.keyValue || {})[0];
     error = {
       statusCode: 400,
-      message: `${field} '${value}' existe déjà`
+      message: field ? `${field} '${err.keyValue[field]}' existe déjà` : 'Cette valeur existe déjà'
+    };
+  }
+
+  // Origine refusée par CORS
+  if (err.message === 'Origin non autorisée par CORS') {
+    error = {
+      statusCode: 403,
+      message: err.message
+    };
+  }
+
+  // JSON invalide dans le body
+  if (err.type === 'entity.parse.failed') {
+    error = {
+      statusCode: 400,
+      message: 'Corps de requête JSON invalide'
     };
   }
 
@@ -73,8 +88,7 @@ const errorHandler = (err, req, res, next) => {
     success: false,
     error: message,
     ...(process.env.NODE_ENV === 'development' && {
-      stack: err.stack,
-      details: err
+      stack: err.stack
     })
   });
 };
