@@ -1091,15 +1091,65 @@ const deleteUserAccount = async (req, res) => {
       });
     }
 
-    // TODO: Implémenter la logique de suppression de compte
-    // - Anonymiser les données sensibles
-    // - Conserver les dons pour les rapports comptables
-    // - Supprimer le profil et autres données personnelles
-    
-    // Pour l'instant, on désactive seulement le compte
-    user.isActive = false;
-    user.email = `deleted_${Date.now()}@example.com`;
-    await user.save({ validateBeforeSave: false });
+    // Suppression du compte : les données personnelles sont effacées ou anonymisées ;
+    // les dons et paiements sont conservés (obligations comptables) mais ne permettent
+    // plus d'identifier la personne.
+    const userId = user._id;
+
+    // 1. Arrêter les dons récurrents (plus d'échéances ni de relances)
+    await Donation.updateMany(
+      { user: userId, type: 'recurring', 'recurring.isActive': true },
+      { $set: { 'recurring.isActive': false } }
+    );
+    await Donation.updateMany({ user: userId }, { $unset: { message: 1, dedication: 1 } });
+
+    // 2. Supprimer la photo de profil et le profil détaillé
+    const withAvatar = await User.findById(userId).select('+avatarPublicId');
+    if (withAvatar?.avatarPublicId) {
+      try {
+        await cloudinaryService.deleteImage(withAvatar.avatarPublicId);
+      } catch (avatarError) {
+        console.error('Erreur suppression avatar:', avatarError.message);
+      }
+    }
+    await Profile.deleteOne({ user: userId });
+
+    // 3. Anonymiser le compte, le désactiver et fermer toutes les sessions
+    await User.updateOne(
+      { _id: userId },
+      {
+        $set: {
+          firstName: 'Compte',
+          lastName: 'supprimé',
+          email: `deleted_${userId}@deleted.invalid`,
+          phone: '0000000000',
+          city: '-',
+          avatar: null,
+          avatarPublicId: null,
+          isActive: false,
+          isEmailVerified: false,
+          isPhoneVerified: false,
+          'emailNotifications.donations': false,
+          'emailNotifications.reminders': false,
+          'emailNotifications.newsletters': false,
+          'smsNotifications.donations': false,
+          'smsNotifications.reminders': false,
+          password: require('crypto').randomBytes(32).toString('hex'),
+          sessions: [],
+          passwordChangedAt: new Date(),
+          badges: []
+        },
+        $unset: {
+          profile: 1,
+          emailVerificationToken: 1, emailVerificationExpires: 1,
+          emailVerificationCode: 1, emailVerificationCodeExpires: 1,
+          phoneVerificationCode: 1, phoneVerificationCodeExpires: 1,
+          passwordResetCode: 1, passwordResetCodeExpires: 1,
+          passwordResetToken: 1, passwordResetExpires: 1,
+          twoFactorSecret: 1
+        }
+      }
+    );
 
     res.json({
       success: true,

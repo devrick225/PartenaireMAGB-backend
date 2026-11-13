@@ -76,9 +76,12 @@ const limiter = rateLimit({
 // Rate limiting strict pour les routes d'authentification
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20,
+  max: parseInt(process.env.AUTH_RATE_LIMIT_MAX) || 20,
   standardHeaders: true,
   legacyHeaders: false,
+  // Seules les tentatives échouées comptent : une assemblée entière partage souvent la
+  // même IP, et 20 connexions réussies en 15 minutes ne sont pas une attaque.
+  skipSuccessfulRequests: true,
   // Ne limiter que les routes sensibles (connexion, inscription, codes, réinitialisation).
   // /me, /refresh et /logout sont appelées à chaque ouverture de l'application : les
   // compter bloquait les utilisateurs légitimes avec « Trop de tentatives de connexion ».

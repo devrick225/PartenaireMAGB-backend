@@ -11,7 +11,9 @@ class EmailService {
         pass: process.env.EMAIL_PASS,
       },
       tls: {
-        rejectUnauthorized: false, // nécessaire sur hébergements mutualisés LWS
+        // Désactivé par défaut car nécessaire sur l'hébergement mutualisé LWS ; mettre
+        // EMAIL_TLS_REJECT_UNAUTHORIZED=true dès que le certificat du serveur SMTP est valide
+        rejectUnauthorized: process.env.EMAIL_TLS_REJECT_UNAUTHORIZED === 'true',
       },
     });
   }
@@ -86,6 +88,18 @@ class EmailService {
         subject = `Ticket #${ticketDetails.ticketNumber} résolu - PARTENAIRE MAGB`;
         htmlContent = this.getTicketResolvedTemplate(firstName, ticketDetails);
         break;
+      // Les autres notifications (assignation, escalade, nouvelle réponse) partaient
+      // sans objet ni contenu : elles utilisent désormais un message dédié.
+      default: {
+        const labels = {
+          assigned: { title: 'Ticket assigné', intro: 'Un ticket vous a été assigné.' },
+          escalated: { title: 'Ticket escaladé', intro: 'Un ticket vous a été escaladé.' },
+          comment_added: { title: 'Nouvelle réponse', intro: 'Une nouvelle réponse a été ajoutée à votre ticket.' }
+        };
+        const label = labels[type] || { title: 'Ticket mis à jour', intro: 'Votre ticket a été mis à jour.' };
+        subject = `${label.title} - Ticket #${ticketDetails.ticketNumber} - PARTENAIRE MAGB`;
+        htmlContent = this.getTicketEventTemplate(firstName, ticketDetails, label);
+      }
     }
     return await this.sendEmail(email, subject, htmlContent);
   }
@@ -114,7 +128,7 @@ class EmailService {
     </style></head><body><div class="container">
       <div class="header"><h1>🙏 PARTENAIRE MAGB</h1><p>Plateforme de dons pour l'église</p></div>
       <div class="content">
-        <h2>Bonjour ${firstName},</h2>
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
         <p>Merci de vous être inscrit sur PARTENAIRE MAGB ! Veuillez vérifier votre adresse email :</p>
         <div style="text-align:center"><a href="${verificationUrl}" class="button">Vérifier mon email</a></div>
         <p><strong>Ce lien expirera dans 24 heures.</strong></p>
@@ -139,7 +153,7 @@ class EmailService {
     </style></head><body><div class="container">
       <div class="header"><h1>📧 PARTENAIRE MAGB</h1><p>Code de vérification email</p></div>
       <div class="content">
-        <h2>Bonjour ${firstName},</h2>
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
         <p>Voici votre code de vérification :</p>
         <div class="code-box"><div class="code">${verificationCode}</div></div>
         <div class="warning"><strong>⏰ Important :</strong><ul>
@@ -165,7 +179,7 @@ class EmailService {
     </style></head><body><div class="container">
       <div class="header"><h1>🔒 PARTENAIRE MAGB</h1><p>Réinitialisation de mot de passe</p></div>
       <div class="content">
-        <h2>Bonjour ${firstName},</h2>
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
         <p>Vous avez demandé une réinitialisation de votre mot de passe :</p>
         <div style="text-align:center"><a href="${resetUrl}" class="button">Réinitialiser mon mot de passe</a></div>
         <div class="warning"><strong>⚠️ Important :</strong><ul>
@@ -192,7 +206,7 @@ class EmailService {
     </style></head><body><div class="container">
       <div class="header"><h1>📧 PARTENAIRE MAGB</h1><p>Code de réinitialisation</p></div>
       <div class="content">
-        <h2>Bonjour ${firstName},</h2>
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
         <p>Voici votre code de réinitialisation :</p>
         <div class="code-box"><div class="code">${resetCode}</div></div>
         <div class="warning"><strong>⏰ Important :</strong><ul>
@@ -246,7 +260,7 @@ class EmailService {
       <div class="header"><h1>📄 Reçu DON PARTENAIRE MAGB</h1></div>
       <div class="content">
         <h2>Reçu officiel</h2>
-        <p>Bonjour ${firstName},</p>
+        <p>Bonjour ${this.escapeHtml(firstName)},</p>
         <div class="receipt">
           <h3>REÇU N° ${receiptDetails.receiptNumber}</h3>
           <p><strong>Donateur :</strong> ${receiptDetails.donorName}</p>
@@ -273,7 +287,7 @@ class EmailService {
     </style></head><body><div class="container">
       <div class="header"><h1>🔔 Rappel DON PARTENAIRE MAGB</h1></div>
       <div class="content">
-        <h2>Bonjour ${firstName},</h2>
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
         <p>Votre DON récurrent est arrivé à échéance :</p>
         <div class="reminder">
           <p><strong>Montant :</strong> ${donationDetails.formattedAmount}</p>
@@ -301,16 +315,53 @@ class EmailService {
     </style></head><body><div class="container">
       <div class="header"><h1>🎫 Nouveau ticket</h1><p>Support PARTENAIRE MAGB</p></div>
       <div class="content">
-        <h2>Bonjour ${firstName},</h2>
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
         <p>Votre demande de support a été créée :</p>
         <div class="ticket-info">
           <h3>Ticket #${ticketDetails.ticketNumber}</h3>
-          <p><strong>Sujet :</strong> ${ticketDetails.subject}</p>
+          <p><strong>Sujet :</strong> ${this.escapeHtml(ticketDetails.subject)}</p>
           <p><strong>Catégorie :</strong> ${this.getTicketCategoryLabel(ticketDetails.category)}</p>
           <p><strong>Priorité :</strong> ${this.getPriorityLabel(ticketDetails.priority)}</p>
           <p><strong>Statut :</strong> ${this.getStatusLabel(ticketDetails.status)}</p>
         </div>
         <p>Temps de réponse estimé : ${this.getResponseTime(ticketDetails.priority)}</p>
+      </div>
+      <div class="footer"><p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p></div>
+    </div></body></html>`;
+  }
+
+  // Échappe le texte saisi par les utilisateurs avant de l'insérer dans un email HTML
+  escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  getTicketEventTemplate(firstName, ticketDetails, label) {
+    const detail = ticketDetails.comment
+      ? `<p><strong>${this.escapeHtml(ticketDetails.respondedBy || 'Le support')} :</strong><br>${this.escapeHtml(ticketDetails.comment)}</p>`
+      : ticketDetails.escalationReason
+        ? `<p><strong>Motif :</strong> ${this.escapeHtml(ticketDetails.escalationReason)}</p>`
+        : '';
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      body{font-family:Arial,sans-serif;line-height:1.6;color:#333}.container{max-width:600px;margin:0 auto;padding:20px}
+      .header{background:linear-gradient(135deg,#f39c12 0%,#e67e22 100%);color:white;padding:30px;text-align:center;border-radius:8px 8px 0 0}
+      .content{background:#fff;padding:30px;border:1px solid #ddd}
+      .ticket-info{background:#fff3cd;border:1px solid #ffc107;padding:15px;border-radius:5px;margin:20px 0}
+      .footer{background:#f8f9fa;padding:20px;text-align:center;color:#666;border-radius:0 0 8px 8px}
+    </style></head><body><div class="container">
+      <div class="header"><h1>${label.title}</h1><p>Support PARTENAIRE MAGB</p></div>
+      <div class="content">
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
+        <p>${label.intro}</p>
+        <div class="ticket-info">
+          <h3>Ticket #${this.escapeHtml(ticketDetails.ticketNumber)}</h3>
+          <p><strong>Sujet :</strong> ${this.escapeHtml(ticketDetails.subject)}</p>
+          ${detail}
+        </div>
+        <p>Connectez-vous pour voir les détails et répondre.</p>
       </div>
       <div class="footer"><p>© ${new Date().getFullYear()} PARTENAIRE MAGB - Tous droits réservés</p></div>
     </div></body></html>`;
@@ -326,10 +377,10 @@ class EmailService {
     </style></head><body><div class="container">
       <div class="header"><h1>Ticket mis à jour</h1><p>Support PARTENAIRE MAGB</p></div>
       <div class="content">
-        <h2>Bonjour ${firstName},</h2>
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
         <div class="ticket-info">
           <h3>Ticket #${ticketDetails.ticketNumber}</h3>
-          <p><strong>Sujet :</strong> ${ticketDetails.subject}</p>
+          <p><strong>Sujet :</strong> ${this.escapeHtml(ticketDetails.subject)}</p>
           <p><strong>Nouveau statut :</strong> ${this.getStatusLabel(ticketDetails.status)}</p>
         </div>
         <p>Connectez-vous pour voir les détails et répondre.</p>
@@ -348,10 +399,10 @@ class EmailService {
     </style></head><body><div class="container">
       <div class="header"><h1>Ticket résolu</h1><p>Support PARTENAIRE MAGB</p></div>
       <div class="content">
-        <h2>Bonjour ${firstName},</h2>
+        <h2>Bonjour ${this.escapeHtml(firstName)},</h2>
         <div class="ticket-info">
           <h3>Ticket #${ticketDetails.ticketNumber}</h3>
-          <p><strong>Sujet :</strong> ${ticketDetails.subject}</p>
+          <p><strong>Sujet :</strong> ${this.escapeHtml(ticketDetails.subject)}</p>
           <p><strong>Résolution :</strong> ${ticketDetails.resolution || 'Problème résolu par notre équipe.'}</p>
         </div>
         <p>Si le problème persiste, ouvrez un nouveau ticket.</p>

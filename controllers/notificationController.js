@@ -2,14 +2,28 @@ const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 const Notification = require('../models/Notification');
 
-const mapNotification = (doc) => ({
-  id: doc._id,
-  titre: doc.title,
-  message: doc.message,
-  date: doc.createdAt,
-  destinataires: doc.recipientsType === 'all' ? 'tous' : (doc.recipients || []).map((id) => id.toString()),
-  lue: (doc.readBy || []).map((id) => id.toString()),
-});
+const STAFF_ROLES = ['admin', 'moderator', 'support_agent'];
+
+// Le staff voit la liste complète des destinataires et des lecteurs ; un utilisateur
+// ne reçoit que ce qui le concerne (auparavant, chaque notification exposait les
+// identifiants de tous les destinataires et de tous ceux qui l'avaient lue).
+const mapNotification = (doc, viewer) => {
+  const isStaff = viewer && STAFF_ROLES.includes(viewer.role);
+  const viewerId = viewer ? viewer.id : null;
+  const readers = (doc.readBy || []).map((id) => id.toString());
+  const recipients = (doc.recipients || []).map((id) => id.toString());
+
+  return {
+    id: doc._id,
+    titre: doc.title,
+    message: doc.message,
+    date: doc.createdAt,
+    destinataires: doc.recipientsType === 'all'
+      ? 'tous'
+      : (isStaff ? recipients : recipients.filter((id) => id === viewerId)),
+    lue: isStaff ? readers : readers.filter((id) => id === viewerId),
+  };
+};
 
 // GET /api/notifications
 const getNotifications = async (req, res) => {
@@ -31,7 +45,7 @@ const getNotifications = async (req, res) => {
     res.json({
       success: true,
       data: {
-        notifications: notifications.map(mapNotification),
+        notifications: notifications.map((n) => mapNotification(n, req.user)),
       },
     });
   } catch (error) {
@@ -59,7 +73,7 @@ const getMyNotifications = async (req, res) => {
     res.json({
       success: true,
       data: {
-        notifications: notifications.map(mapNotification),
+        notifications: notifications.map((n) => mapNotification(n, req.user)),
       },
     });
   } catch (error) {
@@ -91,8 +105,16 @@ const createNotification = async (req, res) => {
       });
     }
 
-    const recipientsType = destinataires === 'tous' ? 'all' : 'users';
-    const recipients = Array.isArray(destinataires) ? destinataires : [];
+    // « tous » (ou rien) = tout le monde ; sinon une liste d'identifiants d'utilisateurs
+    const targetsUsers = Array.isArray(destinataires) && destinataires.length > 0;
+    if (targetsUsers && !destinataires.every((id) => mongoose.Types.ObjectId.isValid(id))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Liste de destinataires invalide',
+      });
+    }
+    const recipientsType = targetsUsers ? 'users' : 'all';
+    const recipients = targetsUsers ? destinataires : [];
 
     const created = await Notification.create({
       title: titre,
@@ -106,7 +128,7 @@ const createNotification = async (req, res) => {
       success: true,
       message: 'Notification créée avec succès',
       data: {
-        notification: mapNotification(created),
+        notification: mapNotification(created, req.user),
       },
     });
   } catch (error) {
@@ -129,25 +151,29 @@ const markNotificationRead = async (req, res) => {
       });
     }
 
-    const notification = await Notification.findById(id);
+    // Mise à jour atomique, limitée aux notifications dont l'utilisateur est destinataire
+    const notification = await Notification.findOneAndUpdate(
+      {
+        _id: id,
+        $or: [
+          { recipientsType: 'all' },
+          { recipientsType: 'users', recipients: req.user._id },
+        ],
+      },
+      { $addToSet: { readBy: req.user._id } },
+      { new: true }
+    );
     if (!notification) {
       return res.status(404).json({
         success: false,
         error: 'Notification non trouvée',
       });
     }
-
-    const alreadyRead = (notification.readBy || []).some((readerId) => readerId.toString() === req.user.id);
-    if (!alreadyRead) {
-      notification.readBy.push(req.user.id);
-      await notification.save();
-    }
-
     res.json({
       success: true,
       message: 'Notification marquée comme lue',
       data: {
-        notification: mapNotification(notification),
+        notification: mapNotification(notification, req.user),
       },
     });
   } catch (error) {

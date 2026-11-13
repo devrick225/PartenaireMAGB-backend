@@ -20,8 +20,10 @@ const paymentLink = () => {
   return base ? `${base.replace(/\/$/, '')}/donations` : null;
 };
 
-const notifyDonor = async (parent, occurrence) => {
-  const user = parent.user;
+// Relances d'une échéance impayée : 1re relance après 3 jours, 2e après 7 jours
+const REMINDER_DELAYS_DAYS = [3, 7];
+
+const notifyDonor = async (parent, occurrence, user = parent.user) => {
   if (!user || !user.email) return;
 
   if (user.emailNotifications?.reminders !== false) {
@@ -147,6 +149,52 @@ const processDueRecurringDonations = async (now = new Date()) => {
   return results;
 };
 
+/**
+ * Relancer les donateurs dont une échéance est restée impayée.
+ * Au plus deux relances par échéance (J+3 puis J+7), jamais deux fois la même.
+ */
+const remindUnpaidOccurrences = async (now = new Date()) => {
+  const results = { checked: 0, reminded: 0, errors: 0 };
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  const unpaid = await Donation.find({
+    recurringParent: { $ne: null },
+    status: 'pending',
+    'paymentReminders.count': { $lt: REMINDER_DELAYS_DAYS.length },
+    createdAt: { $lte: new Date(now.getTime() - REMINDER_DELAYS_DAYS[0] * dayMs) }
+  }).populate('user').populate('recurringParent');
+
+  results.checked = unpaid.length;
+
+  for (const occurrence of unpaid) {
+    try {
+      const sent = occurrence.paymentReminders?.count || 0;
+      const ageDays = (now.getTime() - occurrence.createdAt.getTime()) / dayMs;
+      if (ageDays < REMINDER_DELAYS_DAYS[sent]) continue;
+
+      const parent = occurrence.recurringParent;
+      // L'abonnement a été annulé entre-temps : ne plus relancer
+      if (!parent || parent.recurring?.isActive === false) continue;
+
+      // Réserver la relance de façon atomique (cron + déclenchement manuel simultanés)
+      const claim = await Donation.updateOne(
+        { _id: occurrence._id, status: 'pending', 'paymentReminders.count': sent },
+        { $inc: { 'paymentReminders.count': 1 }, $set: { 'paymentReminders.lastSentAt': now } }
+      );
+      if (claim.modifiedCount === 0) continue;
+
+      await notifyDonor(parent, occurrence, occurrence.user);
+      results.reminded++;
+    } catch (error) {
+      results.errors++;
+      console.error(`❌ Erreur relance échéance ${occurrence._id}:`, error.message);
+    }
+  }
+
+  return results;
+};
+
 module.exports = {
-  processDueRecurringDonations
+  processDueRecurringDonations,
+  remindUnpaidOccurrences
 };

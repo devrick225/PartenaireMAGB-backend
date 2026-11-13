@@ -10,7 +10,8 @@ const {
   getPaymentStats,
   getPayments,
   getPaymentByDonationId,
-  getAllPaymentsByDonationId
+  getAllPaymentsByDonationId,
+  getReconciliationReport
 } = require('../controllers/paymentController');
 
 const router = express.Router();
@@ -21,8 +22,10 @@ const initializePaymentValidation = [
     .notEmpty()
     .isMongoId()
     .withMessage('ID de donation invalide'),
+  // Orange Money, MTN et Moov en direct ne sont pas intégrés (ils appelaient des URL
+  // d'exemple) : ces moyens de paiement passent par MoneyFusion, GeniusPay ou PayDunya.
   body('provider')
-    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'orange_money', 'mtn_mobile_money', 'moov_money', 'paydunya', 'geniuspay'])
+    .isIn(['cinetpay', 'stripe', 'paypal', 'fusionpay', 'moneyfusion', 'paydunya', 'geniuspay'])
     .withMessage('Fournisseur de paiement invalide'),
   body('paymentMethod')
     .custom((value, { req }) => {
@@ -222,6 +225,11 @@ router.get('/mobile-callback', (req, res) => {
 </body>
 </html>`);
 });
+
+// GET /api/payments/reconciliation - Rapport de rapprochement (trésorerie)
+router.get('/reconciliation', authenticateToken, authorizeRoles('admin', 'treasurer'), [
+  query('days').optional().isInt({ min: 1, max: 90 }).withMessage('days doit être compris entre 1 et 90')
+], getReconciliationReport);
 
 // POST /api/payments/initialize - Initialiser un paiement
 router.post('/initialize', authenticateToken, initializePaymentValidation, initializePayment);

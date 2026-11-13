@@ -17,7 +17,7 @@ router.post(
   authorizeRoles('admin', 'moderator', 'support_agent'),
   [
     body('titre').trim().isLength({ min: 2, max: 150 }).withMessage('Titre invalide'),
-    body('url').trim().isURL().withMessage('URL invalide'),
+    body('url').trim().isURL({ protocols: ['http', 'https'], require_protocol: true }).withMessage('URL invalide (http ou https requis)'),
     body('description').optional().isLength({ max: 500 }).withMessage('Description trop longue'),
   ],
   createUsefulLink
@@ -28,7 +28,7 @@ router.put(
   authorizeRoles('admin', 'moderator', 'support_agent'),
   [
     body('titre').optional().trim().isLength({ min: 2, max: 150 }).withMessage('Titre invalide'),
-    body('url').optional().trim().isURL().withMessage('URL invalide'),
+    body('url').optional().trim().isURL({ protocols: ['http', 'https'], require_protocol: true }).withMessage('URL invalide (http ou https requis)'),
     body('description').optional().isLength({ max: 500 }).withMessage('Description trop longue'),
   ],
   updateUsefulLink

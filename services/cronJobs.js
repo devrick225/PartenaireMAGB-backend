@@ -4,7 +4,7 @@ const fusionPayService = require('./fusionPayService');
 const geniusPayService = require('./geniusPayService');
 const paymentService = require('./paymentService');
 const { amountInXofExpr } = require('../utils/currency');
-const { processDueRecurringDonations } = require('./recurringDonationService');
+const { processDueRecurringDonations, remindUnpaidOccurrences } = require('./recurringDonationService');
 
 class CronJobsService {
   constructor() {
@@ -24,6 +24,7 @@ class CronJobsService {
     this.setupPaymentVerificationJob();
     this.setupDonationStatsJob();
     this.setupRecurringDonationsJob();
+    this.setupReconciliationJob();
     this.setupCleanupJob();
     
     this.isInitialized = true;
@@ -187,6 +188,9 @@ class CronJobsService {
         console.log('📅 [CRON] Début traitement des dons récurrents...');
         const results = await processDueRecurringDonations();
         console.log('📅 [CRON] Dons récurrents traités:', results);
+
+        const reminders = await remindUnpaidOccurrences();
+        console.log('📅 [CRON] Relances d\'échéances impayées:', reminders);
       } catch (error) {
         console.error('❌ [CRON] Erreur dons récurrents:', error);
       }
@@ -202,7 +206,48 @@ class CronJobsService {
 
   // Déclenchement manuel (admin, ou planificateur externe si l'hébergement n'a pas de processus permanent)
   async runRecurringDonationsNow() {
-    return processDueRecurringDonations();
+    const occurrences = await processDueRecurringDonations();
+    const reminders = await remindUnpaidOccurrences();
+    return { ...occurrences, reminders };
+  }
+
+  // Rapprochement quotidien (6h) : journalise les anomalies et prévient la trésorerie
+  // par email si RECONCILIATION_EMAIL est défini
+  setupReconciliationJob() {
+    const job = cron.schedule('0 6 * * *', async () => {
+      try {
+        const report = await require('./reconciliationService').buildReport({ days: 1 });
+        const { anomalies } = report;
+        console.log(`🧾 [CRON] Rapprochement: ${anomalies.count} anomalie(s)`, {
+          paidWithoutDonation: anomalies.paidWithoutDonation.length,
+          donationsWithoutPayment: anomalies.donationsWithoutPayment.length,
+          stuckPayments: anomalies.stuckPayments.count,
+          userTotalMismatches: anomalies.userTotalMismatches.count
+        });
+
+        if (anomalies.count > 0 && process.env.RECONCILIATION_EMAIL) {
+          await require('./emailService').sendEmail(
+            process.env.RECONCILIATION_EMAIL,
+            `Rapprochement des paiements : ${anomalies.count} anomalie(s) - PARTENAIRE MAGB`,
+            `<p>Le contrôle quotidien a relevé ${anomalies.count} anomalie(s) :</p><ul>
+              <li>Paiements complétés dont le don ne l'est pas : ${anomalies.paidWithoutDonation.length}</li>
+              <li>Dons complétés sans paiement abouti : ${anomalies.donationsWithoutPayment.length}</li>
+              <li>Paiements en attente depuis plus de 24 h : ${anomalies.stuckPayments.count}</li>
+              <li>Donateurs dont le total diffère de leurs dons : ${anomalies.userTotalMismatches.count}</li>
+            </ul><p>Détail : GET /api/payments/reconciliation</p>`
+          );
+        }
+      } catch (error) {
+        console.error('❌ [CRON] Erreur rapprochement:', error);
+      }
+    }, {
+      scheduled: false,
+      timezone: "Africa/Abidjan"
+    });
+
+    this.jobs.set('reconciliation', job);
+    job.start();
+    console.log('✅ Tâche cron rapprochement activée (quotidien 6h)');
   }
 
   // Nettoyage des données anciennes (hebdomadaire)

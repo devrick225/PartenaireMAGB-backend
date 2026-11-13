@@ -430,7 +430,16 @@ Les tests d'intégration (`tests/`) tournent sur une base MongoDB en mémoire (`
 | `PAYPAL_WEBHOOK_ID` | — | Active la vérification de signature des webhooks PayPal |
 | `USD_TO_XOF_RATE` | `600` | Taux utilisé pour convertir les dons en USD dans les statistiques (l'EUR utilise la parité fixe 655,957) |
 | `RATE_LIMIT_MAX_REQUESTS` | `300` | Requêtes autorisées par IP et par fenêtre de 15 minutes |
+| `AUTH_RATE_LIMIT_MAX` | `20` | Tentatives de connexion **échouées** autorisées par IP en 15 minutes |
+| `RECONCILIATION_EMAIL` | — | Adresse prévenue quand le rapprochement quotidien relève des anomalies |
+| `EMAIL_TLS_REJECT_UNAUTHORIZED` | `false` | Mettre `true` dès que le certificat du serveur SMTP est valide |
 
 ## 🔁 Dons récurrents
 
 Chaque échéance d'un don récurrent crée un don distinct « en attente » (champ `recurringParent`) que le donateur règle par le parcours de paiement habituel ; il est prévenu par e-mail (et SMS s'il l'a activé). La tâche tourne tous les jours à 8h (`services/recurringDonationService.js`) et peut être déclenchée par `POST /api/donations/process-recurring` (admin/trésorier) — utile si l'hébergement n'a pas de processus permanent.
+
+## 🧾 Trésorerie
+
+- `GET /api/payments/reconciliation?days=1` (admin/trésorier) : encaissements par fournisseur sur la période, à comparer aux relevés, et anomalies (paiement complété sans don complété, don complété sans paiement, paiements bloqués, totaux de donateurs incohérents). Le même contrôle tourne tous les jours à 6h.
+- `POST /api/payments/:id/refund` : `{ amount?, reason, manual?, reference? }`. `manual: true` enregistre un remboursement fait hors plateforme (mobile money, espèces).
+- `POST /api/donations` accepte l'en-tête `Idempotency-Key` : un envoi rejoué renvoie le don déjà créé.

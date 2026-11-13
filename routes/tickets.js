@@ -17,7 +17,24 @@ const {
   uploadTicketAttachment
 } = require('../controllers/ticketController');
 
+const cloudinaryService = require('../services/cloudinaryService');
+
 const router = express.Router();
+
+// Réception d'une pièce jointe (champ « attachment », 10 Mo max, images / PDF / Word)
+let attachmentUploader = null;
+const receiveAttachment = (req, res, next) => {
+  attachmentUploader = attachmentUploader || cloudinaryService.getDocumentUploader();
+  attachmentUploader.single('attachment')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({
+        success: false,
+        error: err.code === 'LIMIT_FILE_SIZE' ? 'Fichier trop volumineux (10 Mo maximum)' : err.message
+      });
+    }
+    next();
+  });
+};
 
 // Validation pour la création d'un ticket
 const createTicketValidation = [
@@ -172,7 +189,7 @@ router.post('/:id/comments', authenticateToken, [
 ], addTicketComment);
 
 // POST /api/tickets/:id/attachments - Upload de pièce jointe
-router.post('/:id/attachments', authenticateToken, uploadTicketAttachment);
+router.post('/:id/attachments', authenticateToken, receiveAttachment, uploadTicketAttachment);
 
 // GET /api/tickets/:id/comments - Obtenir les commentaires d'un ticket
 router.get('/:id/comments', authenticateToken, getTicketComments);

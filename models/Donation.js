@@ -143,6 +143,19 @@ const donationSchema = new mongoose.Schema({
     required: [true, 'La méthode de paiement est requise']
   },
   
+  // Clé fournie par le client (en-tête Idempotency-Key) : un même envoi rejoué
+  // (double appui, nouvelle tentative réseau) ne crée pas un second don
+  idempotencyKey: {
+    type: String,
+    maxlength: 100
+  },
+
+  // Relances envoyées pour une échéance restée impayée
+  paymentReminders: {
+    count: { type: Number, default: 0 },
+    lastSentAt: Date
+  },
+
   // Montant déjà remboursé au donateur (dans la devise du don). Les statistiques
   // comptent le montant net ; un don entièrement remboursé passe au statut « refunded ».
   refundedAmount: {
@@ -272,6 +285,10 @@ donationSchema.index({ createdAt: -1 });
 donationSchema.index({ 'recurring.isActive': 1 });
 donationSchema.index({ 'recurring.nextPaymentDate': 1 });
 donationSchema.index({ recurringParent: 1 }, { sparse: true });
+donationSchema.index(
+  { user: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
+);
 
 // Index composé pour les dons récurrents actifs
 donationSchema.index({ 

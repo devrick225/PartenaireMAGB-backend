@@ -4,6 +4,30 @@ const Ticket = require('../models/Ticket');
 const User = require('../models/User');
 const emailService = require('../services/emailService');
 
+// Rôles qui traitent les tickets. Les agents de support en font partie : ils étaient
+// autorisés à assigner / escalader mais ne voyaient que leurs propres tickets.
+const TICKET_STAFF_ROLES = ['admin', 'moderator', 'support_agent'];
+const isTicketStaff = (user) => TICKET_STAFF_ROLES.includes(user.role);
+
+// Champs modifiables via PUT /api/tickets/:id (tout le reste — auteur, numéro, statut,
+// assignation, historique — passe par les routes dédiées)
+const OWNER_EDITABLE_FIELDS = ['description', 'tags'];
+const STAFF_EDITABLE_FIELDS = ['subject', 'description', 'category', 'priority', 'tags'];
+
+// Statuts qu'un simple utilisateur peut donner à son propre ticket
+const OWNER_ALLOWED_STATUSES = ['open', 'waiting_admin', 'closed', 'cancelled'];
+
+// Version d'un ticket renvoyée à un non-membre du support : sans les commentaires
+// internes ni leur trace dans l'historique (qui en contient un extrait)
+const toPublicTicket = (doc) => {
+  const ticket = typeof doc.toObject === 'function' ? doc.toObject() : doc;
+  ticket.comments = (ticket.comments || []).filter(comment => !comment.isInternal);
+  ticket.history = (ticket.history || [])
+    .filter(entry => !entry.metadata?.isInternal)
+    .map(({ metadata, ...entry }) => entry);
+  return ticket;
+};
+
 // Helper: mappe une raison libre (FR/EN) vers une valeur enum autorisée
 function mapCloseReasonToEnum(inputReason) {
   if (!inputReason || typeof inputReason !== 'string') return undefined;
@@ -59,7 +83,7 @@ function mapCloseReasonToEnum(inputReason) {
 const getTickets = async (req, res) => {
   try {
     const { page = 1, limit = 10, status, category, assignedTo, priority } = req.query;
-    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAdmin = isTicketStaff(req.user);
 
     // Construction du filtre
     const filter = isAdmin ? {} : { user: req.user.id };
@@ -70,8 +94,8 @@ const getTickets = async (req, res) => {
     if (assignedTo && isAdmin) filter.assignedTo = assignedTo;
 
     const options = {
-      page: parseInt(page),
-      limit: parseInt(limit),
+      page: Math.max(parseInt(page, 10) || 1, 1),
+      limit: Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50),
       sort: { createdAt: -1 },
       populate: [
         { path: 'user', select: 'firstName lastName email' },
@@ -82,10 +106,13 @@ const getTickets = async (req, res) => {
 
     const tickets = await Ticket.paginate(filter, options);
 
+    // Les commentaires internes sont réservés au staff
+    const docs = isAdmin ? tickets.docs : tickets.docs.map(toPublicTicket);
+
     res.json({
       success: true,
       data: {
-        tickets: tickets.docs,
+        tickets: docs,
         pagination: {
           current: tickets.page,
           total: tickets.totalPages,
@@ -172,9 +199,11 @@ const createTicket = async (req, res) => {
 
     // Notifier les admins en parallèle (Promise.all évite les envois séquentiels)
     try {
+      // (le filtre précédent portait sur un champ inexistant : aucun admin n'était prévenu)
       const admins = await User.find({ 
-        role: { $in: ['admin', 'moderator'] },
-        'emailNotifications.tickets': true 
+        role: { $in: TICKET_STAFF_ROLES },
+        isActive: true,
+        _id: { $ne: req.user._id }
       }).select('email firstName');
 
       await Promise.all(admins.map(admin =>
@@ -253,7 +282,7 @@ const getTicket = async (req, res) => {
 
     // Vérifier les permissions
     const isOwner = ticket.user._id.toString() === req.user.id;
-    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAdmin = isTicketStaff(req.user);
     const isAssigned = ticket.assignedTo && ticket.assignedTo._id.toString() === req.user.id;
 
     if (!isOwner && !isAdmin && !isAssigned) {
@@ -269,10 +298,13 @@ const getTicket = async (req, res) => {
       await ticket.save();
     }
 
+    // Les commentaires internes sont réservés au staff
+    const payload = isAdmin ? ticket.toObject() : toPublicTicket(ticket);
+
     res.json({
       success: true,
       data: {
-        ticket
+        ticket: payload
       }
     });
   } catch (error) {
@@ -310,7 +342,7 @@ const updateTicket = async (req, res) => {
 
     // Vérifier les permissions
     const isOwner = ticket.user.toString() === req.user.id;
-    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAdmin = isTicketStaff(req.user);
     const isAssigned = ticket.assignedTo && ticket.assignedTo.toString() === req.user.id;
 
     if (!isOwner && !isAdmin && !isAssigned) {
@@ -320,18 +352,23 @@ const updateTicket = async (req, res) => {
       });
     }
 
-    // Les utilisateurs normaux ne peuvent modifier que certains champs
-    if (isOwner && !isAdmin) {
-      const allowedFields = ['description', 'tags'];
-      const filteredUpdates = {};
-      allowedFields.forEach(field => {
-        if (updates[field] !== undefined) {
-          filteredUpdates[field] = updates[field];
-        }
+    // Liste blanche selon le rôle : sans elle, le body pouvait réécrire n'importe quel
+    // champ du ticket (auteur, statut, assignation, historique…).
+    const allowedFields = (isAdmin || isAssigned) ? STAFF_EDITABLE_FIELDS : OWNER_EDITABLE_FIELDS;
+    const filteredUpdates = {};
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        filteredUpdates[field] = req.body[field];
+      }
+    });
+    Object.keys(updates).forEach(key => delete updates[key]);
+    Object.assign(updates, filteredUpdates);
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun champ modifiable fourni'
       });
-      // Utiliser let pour permettre la réassignation
-      Object.keys(updates).forEach(key => delete updates[key]);
-      Object.assign(updates, filteredUpdates);
     }
 
     // Appliquer les mises à jour
@@ -388,12 +425,18 @@ const assignTicket = async (req, res) => {
       });
     }
 
-    // Vérifier que l'utilisateur assigné existe
-    const assignedUser = await User.findById(assignedTo);
+    // Vérifier que l'utilisateur assigné existe et fait partie du support
+    const assignedUser = mongoose.Types.ObjectId.isValid(assignedTo) ? await User.findById(assignedTo) : null;
     if (!assignedUser) {
       return res.status(404).json({
         success: false,
         error: 'Utilisateur assigné non trouvé'
+      });
+    }
+    if (!isTicketStaff(assignedUser) || !assignedUser.isActive) {
+      return res.status(400).json({
+        success: false,
+        error: 'Un ticket ne peut être assigné qu\'à un membre actif du support'
       });
     }
 
@@ -471,8 +514,24 @@ const changeTicketStatus = async (req, res) => {
 
     // Vérifier les permissions selon le statut
     const isOwner = ticket.user._id.toString() === req.user.id;
-    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAdmin = isTicketStaff(req.user);
     const isAssigned = ticket.assignedTo && ticket.assignedTo.toString() === req.user.id;
+
+    // Seuls le créateur, l'assigné et le staff peuvent toucher au ticket
+    // (auparavant, n'importe quel utilisateur connecté pouvait rouvrir ou annuler le ticket d'un autre)
+    if (!isOwner && !isAdmin && !isAssigned) {
+      return res.status(403).json({
+        success: false,
+        error: 'Accès non autorisé à ce ticket'
+      });
+    }
+
+    if (!isAdmin && !isAssigned && !OWNER_ALLOWED_STATUSES.includes(status)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Ce changement de statut est réservé au support'
+      });
+    }
 
     // Logique de permissions pour changement de statut
     if (status === 'resolved' && !isAdmin && !isAssigned) {
@@ -568,7 +627,7 @@ const closeTicket = async (req, res) => {
 
     // Vérifier les permissions
     const isOwner = ticket.user._id.toString() === req.user.id;
-    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAdmin = isTicketStaff(req.user);
 
     if (!isOwner && !isAdmin) {
       return res.status(403).json({
@@ -638,7 +697,7 @@ const escalateTicket = async (req, res) => {
     }
 
     // Vérifier que l'utilisateur escaladé existe et a les bonnes permissions
-    const escalatedUser = await User.findById(escalatedTo);
+    const escalatedUser = mongoose.Types.ObjectId.isValid(escalatedTo) ? await User.findById(escalatedTo) : null;
     if (!escalatedUser || !['admin', 'moderator'].includes(escalatedUser.role)) {
       return res.status(400).json({
         success: false,
@@ -924,7 +983,7 @@ const addTicketComment = async (req, res) => {
 
     // Vérifier les permissions
     const isOwner = ticket.user._id.toString() === req.user.id;
-    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAdmin = isTicketStaff(req.user);
     const isAssigned = ticket.assignedTo && ticket.assignedTo.toString() === req.user.id;
 
     if (!isOwner && !isAdmin && !isAssigned) {
@@ -1053,7 +1112,7 @@ const getTicketComments = async (req, res) => {
 
     // Vérifier les permissions
     const isOwner = ticket.user._id.toString() === req.user.id;
-    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAdmin = isTicketStaff(req.user);
     const isAssigned = ticket.assignedTo && ticket.assignedTo.toString() === req.user.id;
 
     if (!isOwner && !isAdmin && !isAssigned) {
@@ -1110,7 +1169,7 @@ const uploadTicketAttachment = async (req, res) => {
 
     // Vérifier les permissions
     const isOwner = ticket.user.toString() === req.user.id;
-    const isAdmin = ['admin', 'moderator'].includes(req.user.role);
+    const isAdmin = isTicketStaff(req.user);
     const isAssigned = ticket.assignedTo && ticket.assignedTo.toString() === req.user.id;
 
     if (!isOwner && !isAdmin && !isAssigned) {
@@ -1120,14 +1179,36 @@ const uploadTicketAttachment = async (req, res) => {
       });
     }
 
-    // TODO: Implémenter l'upload avec Multer et Cloudinary
-    // Pour l'instant, on simule l'upload
+    // Le fichier est reçu par Multer (champ « attachment ») et stocké sur Cloudinary
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun fichier reçu (champ « attachment »)'
+      });
+    }
+
+    // Sans Cloudinary configuré le fichier n'est stocké nulle part : ne pas enregistrer
+    // une pièce jointe sans lien
+    if (!req.file.path) {
+      return res.status(503).json({
+        success: false,
+        error: 'Le stockage de fichiers n\'est pas configuré'
+      });
+    }
+
+    if ((ticket.attachments || []).length >= 10) {
+      return res.status(400).json({
+        success: false,
+        error: 'Nombre maximal de pièces jointes atteint (10)'
+      });
+    }
+
     const attachment = {
-      filename: 'sample-file.pdf',
-      originalName: 'document.pdf',
-      url: 'https://cloudinary.com/sample-file-url',
-      size: 1024000,
-      mimeType: 'application/pdf',
+      filename: req.file.filename || req.file.originalname,
+      originalName: req.file.originalname,
+      url: req.file.path,
+      size: req.file.size,
+      mimeType: req.file.mimetype,
       uploadedBy: req.user.id,
       uploadedAt: new Date()
     };

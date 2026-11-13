@@ -90,8 +90,50 @@ const createDonation = async (req, res) => {
       dedication
     } = req.body;
 
+    const donationResponse = (donation, status, message) => res.status(status).json({
+      success: true,
+      message,
+      data: {
+        donation: {
+          id: donation._id,
+          amount: donation.amount,
+          currency: donation.currency,
+          category: donation.category,
+          type: donation.type,
+          status: donation.status,
+          receiptNumber: donation.receipt.number,
+          createdAt: donation.createdAt,
+          recurring: donation.recurring
+        }
+      }
+    });
+
+    // Idempotence : un envoi rejoué renvoie le don déjà créé au lieu d'en créer un second.
+    //  - avec l'en-tête Idempotency-Key : même clé = même don ;
+    //  - sans clé : un don identique encore en attente, créé il y a moins de 15 secondes,
+    //    est considéré comme un double appui.
+    const rawKey = req.get('Idempotency-Key');
+    const idempotencyKey = typeof rawKey === 'string' && rawKey.trim() ? rawKey.trim().slice(0, 100) : undefined;
+
+    const duplicate = idempotencyKey
+      ? await Donation.findOne({ user: req.user._id, idempotencyKey })
+      : await Donation.findOne({
+          user: req.user._id,
+          amount,
+          currency: currency || 'XOF',
+          category,
+          type,
+          status: 'pending',
+          createdAt: { $gte: new Date(Date.now() - 15 * 1000) }
+        });
+
+    if (duplicate) {
+      return donationResponse(duplicate, 200, 'Don déjà créé');
+    }
+
     // Créer le don
     const donationData = {
+      idempotencyKey,
       user: req.user.id,
       amount,
       currency: currency || 'XOF',
@@ -160,25 +202,21 @@ const createDonation = async (req, res) => {
       console.error('Erreur envoi email confirmation don:', emailError);
     }*/
 
-    res.status(201).json({
-      success: true,
-      message: 'Don créé avec succès',
-      data: {
-        donation: {
-          id: donation._id,
-          amount: donation.amount,
-          currency: donation.currency,
-          category: donation.category,
-          type: donation.type,
-          status: donation.status,
-          receiptNumber: donation.receipt.number,
-          createdAt: donation.createdAt,
-          recurring: donation.recurring
-        }
-      }
-    });
+    donationResponse(donation, 201, 'Don créé avec succès');
   } catch (error) {
     console.error('Erreur createDonation:', error);
+
+    // Deux requêtes simultanées avec la même clé d'idempotence : renvoyer le don créé par la première
+    if (error.code === 11000 && error.keyPattern?.idempotencyKey) {
+      const existing = await Donation.findOne({ user: req.user._id, idempotencyKey: error.keyValue?.idempotencyKey });
+      if (existing) {
+        return res.status(200).json({
+          success: true,
+          message: 'Don déjà créé',
+          data: { donation: { id: existing._id, amount: existing.amount, currency: existing.currency, category: existing.category, type: existing.type, status: existing.status, receiptNumber: existing.receipt.number, createdAt: existing.createdAt, recurring: existing.recurring } }
+        });
+      }
+    }
 
     // Données refusées par le schéma : erreur du client, pas du serveur
     if (error.name === 'ValidationError') {

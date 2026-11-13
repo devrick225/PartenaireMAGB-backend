@@ -3,6 +3,9 @@ const User = require('../models/User');
 const pdfService = require('../services/pdfService');
 const excelService = require('../services/excelService');
 const moment = require('moment');
+const mongoose = require('mongoose');
+
+const invalidId = (res) => res.status(400).json({ success: false, error: 'Identifiant invalide' });
 
 // @desc    Télécharger le reçu de donation en PDF
 // @route   GET /api/documents/donation-receipt/:donationId
@@ -11,6 +14,8 @@ const downloadDonationReceipt = async (req, res) => {
   try {
     const { donationId } = req.params;
     const userId = req.user.id;
+
+    if (!mongoose.Types.ObjectId.isValid(donationId)) return invalidId(res);
 
     // Récupérer la donation avec le paiement (singulier)
     const donation = await Donation.findById(donationId)
@@ -28,7 +33,7 @@ const downloadDonationReceipt = async (req, res) => {
     }
 
     // Vérifier que l'utilisateur a le droit d'accéder à cette donation
-    if (donation.user._id.toString() !== userId && req.user.role !== 'admin') {
+    if (donation.user?._id?.toString() !== userId && !['admin', 'treasurer'].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         error: 'Accès non autorisé à cette donation'
@@ -64,6 +69,8 @@ const downloadDonationSchedulePDF = async (req, res) => {
     const { recurringDonationId } = req.params;
     const userId = req.user.id;
 
+    if (!mongoose.Types.ObjectId.isValid(recurringDonationId)) return invalidId(res);
+
     // Récupérer le don récurrent
     const recurringDonation = await Donation.findById(recurringDonationId)
       .populate('user', 'firstName lastName email phone partnerId');
@@ -84,7 +91,7 @@ const downloadDonationSchedulePDF = async (req, res) => {
     }
 
     // Vérifier les droits d'accès
-    if (recurringDonation.user._id.toString() !== userId && req.user.role !== 'admin') {
+    if (recurringDonation.user?._id?.toString() !== userId && !['admin', 'treasurer'].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         error: 'Accès non autorisé à ce don récurrent'
@@ -127,6 +134,8 @@ const downloadDonationScheduleExcel = async (req, res) => {
     const { recurringDonationId } = req.params;
     const userId = req.user.id;
 
+    if (!mongoose.Types.ObjectId.isValid(recurringDonationId)) return invalidId(res);
+
     // Récupérer le don récurrent
     const recurringDonation = await Donation.findById(recurringDonationId)
       .populate('user', 'firstName lastName email phone partnerId');
@@ -147,7 +156,7 @@ const downloadDonationScheduleExcel = async (req, res) => {
     }
 
     // Vérifier les droits d'accès
-    if (recurringDonation.user._id.toString() !== userId && req.user.role !== 'admin') {
+    if (recurringDonation.user?._id?.toString() !== userId && !['admin', 'treasurer'].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         error: 'Accès non autorisé à ce don récurrent'

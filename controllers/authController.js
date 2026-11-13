@@ -133,27 +133,21 @@ const register = async (req, res) => {
     // Ouvrir la session et générer les tokens
     const { token, refreshToken } = await user.issueTokens();
 
-    // Envoyer l'email de vérification
-    try {
-      await emailService.sendVerificationEmail(
-        user.email, 
-        user.firstName, 
-        emailVerificationToken
-      );
-      console.log(`Email de vérification envoyé à ${user.email}`);
-    } catch (emailError) {
-      console.error('Erreur envoi email de vérification:', emailError);
-      // Ne pas échouer l'inscription si l'email échoue
-    }
-
-    // Envoyer l'email de bienvenue (optionnel)
-    try {
-      await emailService.sendWelcomeEmail(user.email, user.firstName);
-      // Email partenaire personnalisé
-      await emailService.sendPartnerWelcomeEmail(user.email, user.firstName, user.partnerId);
-    } catch (emailError) {
-      console.error('Erreur envoi email de bienvenue:', emailError);
-    }
+    // Emails de vérification et de bienvenue envoyés en arrière-plan : l'inscription
+    // ne doit ni attendre le serveur SMTP ni échouer à cause de lui.
+    (async () => {
+      try {
+        await emailService.sendVerificationEmail(user.email, user.firstName, emailVerificationToken);
+      } catch (emailError) {
+        console.error('Erreur envoi email de vérification:', emailError.message);
+      }
+      try {
+        await emailService.sendWelcomeEmail(user.email, user.firstName);
+        await emailService.sendPartnerWelcomeEmail(user.email, user.firstName, user.partnerId);
+      } catch (emailError) {
+        console.error('Erreur envoi email de bienvenue:', emailError.message);
+      }
+    })();
 
     res.status(201).json({
       success: true,

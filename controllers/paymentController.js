@@ -17,6 +17,38 @@ const {
   finalizeRefund
 } = require('../services/paymentCompletionService');
 
+const PAYMENT_STAFF_ROLES = ['admin', 'moderator', 'treasurer'];
+const PROVIDER_KEYS = ['cinetpay', 'stripe', 'paypal', 'paydunya', 'fusionpay', 'moneyfusion', 'geniuspay', 'mobileMoney'];
+// Données brutes des fournisseurs : utiles au diagnostic, inutiles (et lourdes) pour l'application
+const RAW_PROVIDER_FIELDS = ['apiResponse', 'rawResponse', 'metadata', 'customData', 'designVars', 'facilitatorAccessToken'];
+
+/**
+ * Version d'un paiement renvoyée au client.
+ * - listes : jamais les payloads de webhooks ni les réponses brutes ;
+ * - donateur : pas non plus l'historique technique, les tentatives ni les infos de sécurité.
+ * Les champs dont les applications se servent (token, référence, URL de paiement,
+ * statut, montants) sont conservés.
+ */
+const toClientPayment = (payment, user, { list = false } = {}) => {
+  const data = typeof payment.toObject === 'function' ? payment.toObject() : { ...payment };
+  const isStaff = PAYMENT_STAFF_ROLES.includes(user.role);
+
+  if (!isStaff || list) {
+    delete data.webhooks;
+    PROVIDER_KEYS.forEach(provider => {
+      if (data[provider]) RAW_PROVIDER_FIELDS.forEach(field => delete data[provider][field]);
+    });
+  }
+
+  if (!isStaff) {
+    delete data.attempts;
+    delete data.security;
+    data.history = (data.history || []).map(({ action, description, performedAt }) => ({ action, description, performedAt }));
+  }
+
+  return data;
+};
+
 // Fonction utilitaire pour générer l'URL de callback mobile
 const generateMobileCallbackUrl = (transactionId, donationId, status = 'completed') => {
   return `partenaireMagb://payment/return?transactionId=${transactionId}&donationId=${donationId}&status=${status}`;
@@ -572,7 +604,7 @@ const getPayment = async (req, res) => {
     res.json({
       success: true,
       data: {
-        payment
+        payment: toClientPayment(payment, req.user)
       }
     });
   } catch (error) {
@@ -1152,7 +1184,7 @@ const getPayments = async (req, res) => {
     res.json({
       success: true,
       data: {
-        payments: payments.docs,
+        payments: payments.docs.map(payment => toClientPayment(payment, req.user, { list: true })),
         pagination: {
           current: payments.page,
           total: payments.totalPages,
@@ -1209,7 +1241,7 @@ const getPaymentByDonationId = async (req, res) => {
     
     res.json({
       success: true,
-      data: { payment }
+      data: { payment: toClientPayment(payment, req.user) }
     });
   } catch (error) {
     console.error('Erreur getPaymentByDonationId:', error);
@@ -1262,7 +1294,7 @@ const getAllPaymentsByDonationId = async (req, res) => {
     res.json({
       success: true,
       data: { 
-        payments,
+        payments: payments.map(payment => toClientPayment(payment, req.user, { list: true })),
         count: payments.length,
         donationId 
       }
@@ -1276,7 +1308,30 @@ const getAllPaymentsByDonationId = async (req, res) => {
   }
 };
 
+// @desc    Rapport de rapprochement paiements / dons / totaux des donateurs
+// @route   GET /api/payments/reconciliation?days=1
+// @access  Private (Admin/Treasurer)
+const getReconciliationReport = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Données invalides', details: errors.array() });
+    }
+
+    const report = await require('../services/reconciliationService').buildReport({ days: req.query.days });
+
+    res.json({ success: true, data: report });
+  } catch (error) {
+    console.error('Erreur getReconciliationReport:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la génération du rapport de rapprochement'
+    });
+  }
+};
+
 module.exports = {
+  getReconciliationReport,
   initializePayment,
   paymentCallback,
   getPayment,

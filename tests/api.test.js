@@ -770,6 +770,229 @@ describe('Modifications d\'un don par un administrateur', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('Tickets de support', () => {
+  let owner, ownerToken, outsiderToken, agent, agentToken, ticketId;
+  const Ticket = () => require('../models/Ticket');
+
+  beforeAll(async () => {
+    owner = await newUser();
+    ownerToken = owner.generateAuthToken();
+    outsiderToken = (await newUser()).generateAuthToken();
+    agent = await newUser({ role: 'support_agent' });
+    agentToken = agent.generateAuthToken();
+
+    const res = await as(ownerToken, request(app).post('/api/tickets'))
+      .send({ subject: 'Paiement <b>bloqué</b>', description: 'Mon paiement ne passe pas depuis hier soir.', category: 'payment' });
+    expect(res.status).toBe(201);
+    ticketId = res.body.data.ticket.id;
+  });
+
+  test('le support est prévenu à la création du ticket', () => {
+    expect(helpers.emails.some(e => e.to === agent.email && e.subject.includes('créé'))).toBe(true);
+  });
+
+  test('un agent de support voit les tickets des utilisateurs', async () => {
+    const list = await as(agentToken, request(app).get('/api/tickets?limit=50'));
+    expect(list.body.data.tickets.some(t => String(t._id) === String(ticketId))).toBe(true);
+    expect((await as(agentToken, request(app).get(`/api/tickets/${ticketId}`))).status).toBe(200);
+  });
+
+  test('un autre utilisateur ne peut ni lire ni changer le statut du ticket', async () => {
+    expect((await as(outsiderToken, request(app).get(`/api/tickets/${ticketId}`))).status).toBe(403);
+    const res = await as(outsiderToken, request(app).post(`/api/tickets/${ticketId}/status`)).send({ status: 'cancelled', reason: 'Annulation forcée' });
+    expect(res.status).toBe(403);
+    expect((await Ticket().findById(ticketId)).status).toBe('open');
+  });
+
+  test('le créateur ne peut pas réécrire les champs protégés du ticket', async () => {
+    const res = await as(ownerToken, request(app).put(`/api/tickets/${ticketId}`))
+      .send({ description: 'Description mise à jour par son auteur.', status: 'resolved', priority: 'urgent', user: String(agent._id) });
+    expect(res.status).toBe(200);
+
+    const ticket = await Ticket().findById(ticketId);
+    expect(ticket.description).toBe('Description mise à jour par son auteur.');
+    expect(ticket.status).toBe('open');
+    expect(ticket.priority).toBe('medium');
+    expect(String(ticket.user)).toBe(String(owner._id));
+
+    const resolve = await as(ownerToken, request(app).post(`/api/tickets/${ticketId}/status`)).send({ status: 'resolved', reason: 'Je me déclare résolu' });
+    expect(resolve.status).toBe(403);
+  });
+
+  test('un ticket ne peut être assigné qu\'au support, et l\'email d\'assignation a un objet', async () => {
+    const toUser = await as(agentToken, request(app).post(`/api/tickets/${ticketId}/assign`)).send({ assignedTo: String(owner._id) });
+    expect(toUser.status).toBe(400);
+
+    const toAgent = await as(agentToken, request(app).post(`/api/tickets/${ticketId}/assign`)).send({ assignedTo: String(agent._id) });
+    expect(toAgent.status).toBe(200);
+    const mail = helpers.emails.filter(e => e.to === agent.email).pop();
+    expect(mail.subject).toContain('Ticket assigné');
+  });
+
+  test('les commentaires internes ne sont pas visibles du créateur', async () => {
+    await as(agentToken, request(app).post(`/api/tickets/${ticketId}/comments`)).send({ content: 'Note interne confidentielle', isInternal: true });
+    await as(agentToken, request(app).post(`/api/tickets/${ticketId}/comments`)).send({ content: 'Bonjour, nous regardons votre dossier.' });
+
+    const detail = await as(ownerToken, request(app).get(`/api/tickets/${ticketId}`));
+    const list = await as(ownerToken, request(app).get('/api/tickets'));
+    expect(JSON.stringify(detail.body)).not.toContain('confidentielle');
+    expect(JSON.stringify(list.body)).not.toContain('confidentielle');
+    expect(JSON.stringify(detail.body)).toContain('nous regardons votre dossier');
+
+    const staffView = await as(agentToken, request(app).get(`/api/tickets/${ticketId}`));
+    expect(JSON.stringify(staffView.body)).toContain('confidentielle');
+    // La réponse publique est notifiée au créateur avec un objet
+    expect(helpers.emails.filter(e => e.to === owner.email).pop().subject).toContain('Nouvelle réponse');
+  });
+
+  test('une pièce jointe sans fichier est refusée (plus de fichier factice)', async () => {
+    const res = await as(ownerToken, request(app).post(`/api/tickets/${ticketId}/attachments`));
+    expect(res.status).toBe(400);
+    expect((await Ticket().findById(ticketId)).attachments).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('Notifications', () => {
+  test('un utilisateur ne voit ni les autres destinataires ni les autres lecteurs', async () => {
+    const adminToken = (await newUser({ role: 'admin' })).generateAuthToken();
+    const alice = await newUser();
+    const bob = await newUser();
+    const carol = await newUser();
+
+    const created = await as(adminToken, request(app).post('/api/notifications'))
+      .send({ titre: 'Réunion', message: 'Réunion des partenaires samedi.', destinataires: [String(alice._id), String(bob._id)] });
+    expect(created.status).toBe(201);
+    const id = created.body.data.notification.id;
+
+    await as(bob.generateAuthToken(), request(app).patch(`/api/notifications/${id}/read`));
+    const notRecipient = await as(carol.generateAuthToken(), request(app).patch(`/api/notifications/${id}/read`));
+    expect(notRecipient.status).toBe(404);
+
+    const mine = await as(alice.generateAuthToken(), request(app).get('/api/notifications/my'));
+    const notif = mine.body.data.notifications.find(n => String(n.id) === String(id));
+    expect(notif.destinataires).toEqual([String(alice._id)]);
+    expect(notif.lue).toEqual([]);
+
+    const invalid = await as(adminToken, request(app).post('/api/notifications'))
+      .send({ titre: 'Test', message: 'Destinataires invalides', destinataires: ['pas-un-id'] });
+    expect(invalid.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('Idempotence, relances et données renvoyées', () => {
+  test('un double envoi ne crée qu\'un seul don', async () => {
+    const user = await newUser();
+    const token = user.generateAuthToken();
+    const body = { amount: 7000, currency: 'XOF', category: 'don_ponctuel', type: 'one_time', paymentMethod: 'moneyfusion' };
+
+    const first = await as(token, request(app).post('/api/donations')).send(body);
+    const second = await as(token, request(app).post('/api/donations')).send(body);
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(200);
+    expect(second.body.data.donation.id).toBe(first.body.data.donation.id);
+
+    const [a, b] = await Promise.all([
+      as(token, request(app).post('/api/donations')).set('Idempotency-Key', 'cle-1').send({ ...body, amount: 9000 }),
+      as(token, request(app).post('/api/donations')).set('Idempotency-Key', 'cle-1').send({ ...body, amount: 9000 })
+    ]);
+    expect(a.body.data.donation.id).toBe(b.body.data.donation.id);
+    expect(await Donation.countDocuments({ user: user._id })).toBe(2);
+  });
+
+  test('les fournisseurs non intégrés sont refusés à l\'initialisation', async () => {
+    const user = await newUser();
+    const donation = await helpers.createDonation(Donation, user);
+    const res = await as(user.generateAuthToken(), request(app).post('/api/payments/initialize'))
+      .send({ donationId: String(donation._id), provider: 'orange_money', paymentMethod: 'mobile_money' });
+    expect(res.status).toBe(400);
+  });
+
+  test('une échéance impayée est relancée à J+3 puis J+7, jamais plus', async () => {
+    const user = await newUser();
+    const parent = await helpers.createDonation(Donation, user, {
+      type: 'recurring', category: 'don_mensuel', status: 'completed',
+      recurring: { frequency: 'monthly', dayOfMonth: 1, startDate: new Date(), nextPaymentDate: new Date(Date.now() + 20 * 86400000), isActive: true }
+    });
+    const occurrence = await helpers.createDonation(Donation, user, { recurringParent: parent._id, occurrenceNumber: 1 });
+    const age = (days) => Donation.collection.updateOne({ _id: occurrence._id }, { $set: { createdAt: new Date(Date.now() - days * 86400000) } });
+    const mails = () => helpers.emails.filter(e => e.to === user.email).length;
+    const before = mails();
+
+    await age(1);
+    await recurring.remindUnpaidOccurrences();
+    expect(mails()).toBe(before);
+
+    await age(4);
+    await recurring.remindUnpaidOccurrences();
+    await recurring.remindUnpaidOccurrences();
+    expect(mails()).toBe(before + 1);
+
+    await age(8);
+    await recurring.remindUnpaidOccurrences();
+    await recurring.remindUnpaidOccurrences();
+    expect(mails()).toBe(before + 2);
+  });
+
+  test('le donateur ne reçoit pas les données techniques de son paiement', async () => {
+    const user = await newUser();
+    const donation = await helpers.createDonation(Donation, user);
+    const payment = await helpers.createMoneyFusionPayment(Payment, user, donation);
+    const doc = await Payment.findById(payment._id);
+    doc.addWebhook('moneyfusion', 'payment_pending', 'evt', { secretPayload: 'ne-pas-exposer' });
+    doc.set('moneyfusion.apiResponse', { secretPayload: 'ne-pas-exposer' });
+    await doc.save();
+
+    const mine = await as(user.generateAuthToken(), request(app).get(`/api/payments/${payment._id}`));
+    expect(mine.status).toBe(200);
+    expect(JSON.stringify(mine.body)).not.toContain('ne-pas-exposer');
+    expect(mine.body.data.payment.moneyfusion.token).toBe(payment.moneyfusion.token);
+
+    const list = await as(user.generateAuthToken(), request(app).get('/api/payments'));
+    expect(JSON.stringify(list.body)).not.toContain('ne-pas-exposer');
+  });
+
+  test('supprimer son compte efface les données personnelles et garde les dons', async () => {
+    const user = await newUser({ firstName: 'Mariam', lastName: 'Diallo' });
+    const { token } = await login(user.email);
+    await helpers.createDonation(Donation, user, { status: 'completed', message: 'Pour ma famille' });
+
+    const res = await as(token, request(app).delete('/api/users/account')).send({ password: 'Abcdefg1', confirmation: 'DELETE' });
+    expect(res.status).toBe(200);
+
+    const after = await User.findById(user._id);
+    expect(after.isActive).toBe(false);
+    expect([after.firstName, after.lastName]).toEqual(['Compte', 'supprimé']);
+    expect(after.email).not.toBe(user.email);
+    expect(after.phone).toBe('0000000000');
+    expect((await as(token, request(app).get('/api/auth/me'))).status).toBe(401);
+    expect((await request(app).post('/api/auth/login').send({ email: user.email, password: 'Abcdefg1' })).status).toBe(401);
+
+    const donations = await Donation.find({ user: user._id });
+    expect(donations).toHaveLength(1);
+    expect(donations[0].message).toBeUndefined();
+  });
+
+  test('le rapport de rapprochement signale les incohérences', async () => {
+    const treasurerToken = (await newUser({ role: 'treasurer' })).generateAuthToken();
+    const user = await newUser();
+    // Paiement complété dont le don est resté en attente
+    const donation = await helpers.createDonation(Donation, user);
+    const payment = await helpers.createMoneyFusionPayment(Payment, user, donation, { status: 'completed', transaction: { completedAt: new Date() } });
+
+    const res = await as(treasurerToken, request(app).get('/api/payments/reconciliation?days=1'));
+    expect(res.status).toBe(200);
+    const report = res.body.data;
+    expect(report.anomalies.paidWithoutDonation.some(a => String(a.paymentId) === String(payment._id))).toBe(true);
+    expect(report.totalsByProvider.find(t => t.provider === 'moneyfusion' && t.currency === 'XOF').count).toBeGreaterThan(0);
+
+    const forbidden = await as(user.generateAuthToken(), request(app).get('/api/payments/reconciliation'));
+    expect(forbidden.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe('Callback mobile et erreurs', () => {
   test('le deep link est limité aux schémas de l\'application', async () => {
     const evil = await request(app).get('/api/payments/mobile-callback')
