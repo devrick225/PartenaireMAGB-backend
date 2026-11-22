@@ -143,6 +143,20 @@ const updateProfile = async (req, res) => {
     const { user: userField, ...rawUpdates } = updates;
     const cleanUpdates = cleanEmptyValues(rawUpdates);
 
+    // Nouveau numéro : il doit être libre et devra être revérifié (il sert à la
+    // réinitialisation du mot de passe par SMS)
+    if (cleanUpdates.phone && cleanUpdates.phone !== user.phone) {
+      const phoneTaken = await User.exists({ phone: cleanUpdates.phone, _id: { $ne: user._id } });
+      if (phoneTaken) {
+        return res.status(400).json({
+          success: false,
+          error: 'Ce numéro de téléphone est déjà utilisé par un autre compte'
+        });
+      }
+      user.isPhoneVerified = false; // enregistré avec les autres champs plus bas
+    }
+
+
     // Seules les sections du profil modifiables par l'utilisateur sont appliquées :
     // les champs calculés ou réservés au staff (isComplete, notes, user…) sont ignorés.
     const EDITABLE_PROFILE_FIELDS = [
@@ -218,9 +232,10 @@ const updateProfile = async (req, res) => {
     }
 
     // Mettre à jour aussi les informations de base dans User si nécessaire
-    const userFields = ['firstName', 'lastName', 'phone', 'language', 'currency'];
+    // (l'email n'est pas modifiable ici : il sert d'identifiant et exige une vérification)
+    const userFields = ['firstName', 'lastName', 'phone', 'city', 'country', 'language', 'currency'];
     let userUpdated = false;
-    
+
     userFields.forEach(field => {
       if (cleanUpdates[field] && user[field] !== cleanUpdates[field]) {
         user[field] = cleanUpdates[field];
