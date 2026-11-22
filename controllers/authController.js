@@ -501,6 +501,16 @@ const resetPassword = async (req, res) => {
 // @access  Public
 const requestPasswordResetCode = async (req, res) => {
   try {
+    // Appliquer les validations déclarées sur la route
+    const validationErrors = validationResult(req);
+    if (!validationErrors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: validationErrors.array()[0]?.msg || 'Données invalides',
+        details: validationErrors.array()
+      });
+    }
+
     const user = await User.findOne({ email: { $in: emailCandidates(req) } });
 
     // Réponse identique que l'utilisateur existe ou non (anti-énumération)
@@ -567,6 +577,16 @@ const requestPasswordResetCode = async (req, res) => {
 // @access  Public
 const resetPasswordWithCode = async (req, res) => {
   try {
+    // Appliquer les validations déclarées sur la route
+    const validationErrors = validationResult(req);
+    if (!validationErrors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: validationErrors.array()[0]?.msg || 'Données invalides',
+        details: validationErrors.array()
+      });
+    }
+
     const { email, code, newPassword } = req.body;
 
     const user = await User.findOne({ email: { $in: emailCandidates(req) } })
@@ -946,6 +966,16 @@ const verifyPhoneCode = async (req, res) => {
 // @access  Public
 const requestPasswordResetSmsCode = async (req, res) => {
   try {
+    // Appliquer les validations déclarées sur la route
+    const validationErrors = validationResult(req);
+    if (!validationErrors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: validationErrors.array()[0]?.msg || 'Données invalides',
+        details: validationErrors.array()
+      });
+    }
+
     const { phone } = req.body;
 
     const user = await User.findOne({ phone });
@@ -1014,6 +1044,16 @@ const requestPasswordResetSmsCode = async (req, res) => {
 // @access  Public
 const resetPasswordWithSmsCode = async (req, res) => {
   try {
+    // Appliquer les validations déclarées sur la route
+    const validationErrors = validationResult(req);
+    if (!validationErrors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: validationErrors.array()[0]?.msg || 'Données invalides',
+        details: validationErrors.array()
+      });
+    }
+
     const { phone, code, newPassword } = req.body;
 
     const user = await User.findOne({ phone })
