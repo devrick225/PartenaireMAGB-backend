@@ -615,6 +615,16 @@ const resetPasswordWithCode = async (req, res) => {
 // @access  Private
 const changePassword = async (req, res) => {
   try {
+    // Appliquer changePasswordValidation (longueur, majuscule, minuscule, chiffre)
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: errors.array()[0]?.msg || 'Données invalides',
+        details: errors.array()
+      });
+    }
+
     const { currentPassword, newPassword } = req.body;
 
     const user = await User.findById(req.user.id).select('+password');
