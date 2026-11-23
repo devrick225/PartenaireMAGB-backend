@@ -853,7 +853,8 @@ const deleteAvatar = async (req, res) => {
 
 const uploadAvatar = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    // avatarPublicId est en select: false : le demander pour pouvoir supprimer l'ancienne image Cloudinary
+    const user = await User.findById(req.user.id).select('+avatarPublicId');
 
     if (!user) {
       return res.status(404).json({
@@ -943,7 +944,8 @@ const uploadAvatar = async (req, res) => {
 // @access  Private
 const uploadAvatarBase64 = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    // avatarPublicId est en select: false : le demander pour pouvoir supprimer l'ancienne image Cloudinary
+    const user = await User.findById(req.user.id).select('+avatarPublicId');
 
     if (!user) {
       return res.status(404).json({
