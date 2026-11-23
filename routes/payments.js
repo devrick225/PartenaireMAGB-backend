@@ -207,6 +207,9 @@ router.get('/mobile-callback', (req, res) => {
     .spinner { width: 40px; height: 40px; border: 4px solid #e0e0e0; border-top-color: #59376b; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 20px auto; }
     @keyframes spin { to { transform: rotate(360deg); } }
     p { color: #666; font-size: 16px; }
+    .btn { display: inline-block; margin-top: 16px; padding: 14px 28px; background: #59376b; color: #fff; border-radius: 10px; text-decoration: none; font-size: 17px; font-weight: bold; }
+    .hint { font-size: 13px; color: #999; }
+    .link { display: inline-block; margin-top: 24px; color: #59376b; font-size: 14px; }
     .status { font-weight: bold; color: ${status === 'completed' ? '#4CAF50' : status === 'failed' ? '#F44336' : '#FF9800'}; }
   </style>
 </head>
@@ -214,13 +217,18 @@ router.get('/mobile-callback', (req, res) => {
   <div class="spinner"></div>
   <p>Paiement <span class="status">${status === 'completed' ? 'confirmé ✓' : status === 'failed' ? 'échoué ✗' : status === 'cancelled' ? 'annulé' : 'en cours...'}</span></p>
   <p>Retour vers l'application...</p>
+  <a id="open-app" class="btn" href="#">Retourner à l'application</a>
+  <p class="hint">Si rien ne se passe, appuyez sur le bouton ci-dessus.</p>
+  <a id="open-web" class="link" href="#">Je n'ai pas l'application</a>
   <script>
-    // Tenter d'ouvrir le deep link immédiatement
-    window.location.href = ${toInlineScriptString(targetDeepLink)};
-    // Si l'app ne s'ouvre pas dans 3 secondes, rediriger vers le fallback web
-    setTimeout(function() {
-      window.location.href = ${toInlineScriptString(fallbackUrl)};
-    }, 3000);
+    var deepLink = ${toInlineScriptString(targetDeepLink)};
+    var fallbackUrl = ${toInlineScriptString(fallbackUrl)};
+    document.getElementById('open-app').href = deepLink;
+    document.getElementById('open-web').href = fallbackUrl;
+    // Tenter d'ouvrir l'application immédiatement. Certains navigateurs (Chrome Android,
+    // Safari) bloquent cette ouverture sans geste de l'utilisateur : le bouton prend le relais.
+    // Pas de bascule automatique vers le site web, qui ferait perdre le retour à l'app.
+    window.location.href = deepLink;
   </script>
 </body>
 </html>`);

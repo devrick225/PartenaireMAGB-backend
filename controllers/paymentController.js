@@ -279,7 +279,8 @@ const initializePayment = async (req, res) => {
             currency: donation.currency,
             customerInfo,
             donationId,
-            callbackUrl: platform,
+            // Deep link de retour fourni par l'app (partenaireMagb:// ou exp:// en Expo Go)
+            callbackUrl: req.body.callbackUrl || platform,
             description: 'DON PARTENAIRE MAGB'
           });
 
@@ -308,6 +309,8 @@ const initializePayment = async (req, res) => {
             currency: donation.currency,
             customerInfo,
             donationId,
+            // Deep link de retour fourni par l'app (partenaireMagb:// ou exp:// en Expo Go)
+            callbackUrl: req.body.callbackUrl,
             description: 'DON PARTENAIRE MAGB'
           });
 

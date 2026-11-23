@@ -40,6 +40,7 @@ class GeniusPayService {
     currency,
     customerInfo,
     donationId,
+    callbackUrl,
     description = 'DON PARTENAIRE MAGB'
   }) {
     try {
@@ -56,8 +57,13 @@ class GeniusPayService {
         throw new Error('BACKEND_URL doit être une URL HTTPS publique pour GeniusPay');
       }
 
-      const successUrl = `${publicBackendUrl}/api/payments/mobile-callback?donationId=${donationId}&provider=geniuspay&status=completed`;
-      const errorUrl = `${publicBackendUrl}/api/payments/mobile-callback?donationId=${donationId}&provider=geniuspay&status=failed`;
+      // Deep link de l'app transmis à la page de retour (indispensable en Expo Go : exp://…)
+      // La route mobile-callback n'accepte que les schémas de l'application.
+      const deepLinkParam = typeof callbackUrl === 'string' && callbackUrl.includes('://')
+        ? `&deepLink=${encodeURIComponent(callbackUrl)}`
+        : '';
+      const successUrl = `${publicBackendUrl}/api/payments/mobile-callback?donationId=${donationId}&provider=geniuspay&status=completed${deepLinkParam}`;
+      const errorUrl = `${publicBackendUrl}/api/payments/mobile-callback?donationId=${donationId}&provider=geniuspay&status=failed${deepLinkParam}`;
 
       const payload = {
         amount: parseFloat(amount),
