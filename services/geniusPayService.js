@@ -5,7 +5,7 @@ const { completePayment, failPayment } = require('./paymentCompletionService');
 
 class GeniusPayService {
   constructor() {
-    this.apiUrl = process.env.GENIUSPAY_API_URL || 'https://pay.genius.ci/api/v1/merchant';
+    this.apiUrl = process.env.GENIUSPAY_API_URL || 'https://geniuspay.ci/api/v1/merchant';
     this.apiKey = process.env.GENIUSPAY_API_KEY;
     this.apiSecret = process.env.GENIUSPAY_API_SECRET;
     this.webhookSecret = process.env.GENIUSPAY_WEBHOOK_SECRET;
@@ -75,6 +75,7 @@ class GeniusPayService {
           type: 'donation',
           description
         },
+        description: String(description).slice(0, 500),
         success_url: successUrl,
         error_url: errorUrl
         // payment_method volontairement omis : checkout unifié recommandé par GeniusPay
@@ -103,9 +104,18 @@ class GeniusPayService {
         rawResponse: data
       };
     } catch (error) {
-      const apiError = error.response?.data?.error;
-      console.error('❌ Erreur GeniusPay initializePayment:', apiError || error.message);
-      throw new Error(`Erreur GeniusPay: ${apiError?.message || error.message}`);
+      const status = error.response?.status;
+      const body = error.response?.data;
+      const apiError = body?.error;
+      console.error('❌ Erreur GeniusPay initializePayment:', {
+        status,
+        body,
+        message: error.message,
+        apiUrl: this.apiUrl,
+        keyMode: this.apiKey?.startsWith('pk_live') ? 'live' : this.apiKey ? 'sandbox/autre' : 'ABSENTE'
+      });
+      const reason = (typeof apiError === 'string' ? apiError : apiError?.message) || body?.message || error.message;
+      throw new Error(`Erreur GeniusPay${status ? ` (${status})` : ''}: ${reason}`);
     }
   }
 
@@ -288,7 +298,8 @@ class GeniusPayService {
 
   /**
    * Traiter les notifications webhook GeniusPay
-   * Structure: { id, event, timestamp, data: { reference, amount, currency, fees, net_amount, status, metadata }, environment }
+   * Structure documentée : { event, timestamp, data: { transaction: { reference, amount, status, metadata, ... }, merchant, environment } }
+   * L'ancien format plat (data.reference, data.status…) reste accepté par compatibilité.
    */
   async processWebhook(rawBody, signature, timestamp) {
     try {
@@ -297,16 +308,27 @@ class GeniusPayService {
       }
 
       const webhookData = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;
-      const { event, data } = webhookData;
+      const { event } = webhookData;
+      // La transaction est dans data.transaction (format documenté) ; repli sur data (ancien format plat)
+      const data = webhookData.data?.transaction || webhookData.data;
 
       if (!data || !data.reference) {
         throw new Error('reference manquante dans le webhook GeniusPay');
       }
 
-      const mappedStatus = this.mapStatus(data.status);
+      // Si le statut est absent de la transaction, le déduire de l'événement
+      const eventStatus = {
+        'payment.success': 'completed',
+        'payment.failed': 'failed',
+        'payment.cancelled': 'cancelled',
+        'payment.refunded': 'refunded',
+        'payment.expired': 'expired',
+        'payment.initiated': 'pending'
+      }[event];
+      const mappedStatus = this.mapStatus(data.status || eventStatus);
       const eventType = this.mapEventToType(event);
 
-      console.log(`📨 GeniusPay - Webhook event: ${event}, statut: ${data.status} -> ${mappedStatus}, reference: ${data.reference}`);
+      console.log(`📨 GeniusPay - Webhook event: ${event}, statut: ${data.status || eventStatus} -> ${mappedStatus}, reference: ${data.reference}`);
 
       const result = {
         type: eventType,
@@ -319,7 +341,7 @@ class GeniusPayService {
           netAmount: parseFloat(data.net_amount) || 0,
           currency: data.currency,
           metadata: data.metadata || {},
-          originalStatus: data.status,
+          originalStatus: data.status || eventStatus,
           originalEvent: event,
           provider: 'geniuspay',
           webhookTimestamp: new Date().toISOString()

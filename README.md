@@ -156,7 +156,7 @@ PAYPAL_CLIENT_SECRET=your-paypal-client-secret
 PAYPAL_ENVIRONMENT=sandbox
 
 # Configuration GeniusPay
-GENIUSPAY_API_URL=https://pay.genius.ci/api/v1/merchant
+GENIUSPAY_API_URL=https://geniuspay.ci/api/v1/merchant
 GENIUSPAY_API_KEY=pk_sandbox_your-geniuspay-public-key
 GENIUSPAY_API_SECRET=sk_sandbox_your-geniuspay-secret-key
 GENIUSPAY_WEBHOOK_SECRET=whsec_sandbox_your-geniuspay-webhook-secret
