@@ -809,6 +809,48 @@ const getUserStats = async (req, res) => {
 // @desc    Upload d'avatar
 // @route   POST /api/users/upload-avatar
 // @access  Private
+// @desc    Supprimer l'avatar de l'utilisateur connecté
+// @route   DELETE /api/users/avatar
+// @access  Private
+const deleteAvatar = async (req, res) => {
+  try {
+    // avatarPublicId est en select: false dans le modèle : le demander explicitement
+    const user = await User.findById(req.user.id).select('+avatarPublicId');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    if (user.avatarPublicId) {
+      try {
+        await cloudinaryService.deleteImage(user.avatarPublicId);
+      } catch (deleteError) {
+        // L'image restera sur Cloudinary, mais le profil ne la référence plus
+        console.warn('⚠️ Suppression Cloudinary de l\'avatar impossible:', deleteError.message);
+      }
+    }
+
+    user.avatar = null;
+    user.avatarPublicId = null;
+    await user.save({ validateBeforeSave: false });
+
+    res.json({
+      success: true,
+      message: 'Photo de profil supprimée',
+      data: { avatar: null }
+    });
+  } catch (error) {
+    console.error('❌ Erreur deleteAvatar:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la suppression de la photo de profil'
+    });
+  }
+};
+
 const uploadAvatar = async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
@@ -1349,6 +1391,7 @@ module.exports = {
   getUserStats,
   uploadAvatar,
   uploadAvatarBase64,
+  deleteAvatar,
   updateUserPreferences,
   getUserPreferences,
   deleteUserAccount,

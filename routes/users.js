@@ -13,6 +13,7 @@ const {
   getUserStats,
   uploadAvatar,
   uploadAvatarBase64,
+  deleteAvatar,
   updateUserPreferences,
   deleteUserAccount,
   getLeaderboard,
@@ -332,6 +333,9 @@ router.post('/upload-avatar-base64', authenticateToken, [
     .matches(/^data:image\/(jpeg|jpg|png|webp);base64,/)
     .withMessage('Format d\'image invalide. Utilisez JPEG, PNG ou WebP en base64.')
 ], uploadAvatarBase64);
+
+// DELETE /api/users/avatar - Supprimer sa photo de profil
+router.delete('/avatar', authenticateToken, deleteAvatar);
 
 // DELETE /api/users/account - Supprimer son compte (avec confirmation)
 router.delete('/account', authenticateToken, deleteAccountValidation, deleteUserAccount);
