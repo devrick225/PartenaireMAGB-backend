@@ -87,6 +87,16 @@ const initializePayment = async (req, res) => {
 
     const { donationId, provider, paymentMethod, customerPhone, existingPaymentId } = req.body;
 
+    // GeniusPay désactivé tant que GENIUSPAY_ENABLED n'est pas à "true" (incident en production).
+    // Seule l'initialisation de nouveaux paiements est bloquée : les webhooks des paiements
+    // déjà lancés continuent d'être traités.
+    if ((provider === 'geniuspay' || paymentMethod === 'geniuspay') && process.env.GENIUSPAY_ENABLED !== 'true') {
+      return res.status(503).json({
+        success: false,
+        error: 'Le paiement GeniusPay est temporairement indisponible. Merci d\'utiliser MoneyFusion.'
+      });
+    }
+
     // Vérifier que la donation existe et appartient à l'utilisateur
     const donation = await Donation.findById(donationId);
     if (!donation) {

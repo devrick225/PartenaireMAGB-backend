@@ -192,6 +192,21 @@ router.get('/mobile-callback', (req, res) => {
   fallbackParams.append('status', status);
   const fallbackUrl = `${process.env.FRONTEND_URL || 'https://partenairemagb-frontend.onrender.com'}/payment-result?${fallbackParams.toString()}`;
 
+  // Android : Chrome met le schéma d'URL en minuscules (« partenairemagb:// ») alors que l'app
+  // déclare « partenaireMagb » et qu'Android compare les schémas en respectant la casse : le lien
+  // ne trouvait aucune app et le bouton « Retourner à l'application » ne faisait rien.
+  // Une URL intent:// fixe le schéma exact et le paquet de l'app, ce qui contourne le problème.
+  const ANDROID_PACKAGE = 'com.ericsou.PartenaireMAGB';
+  const APP_SCHEME = 'partenaireMagb';
+  const isAndroid = /android/i.test(req.headers['user-agent'] || '');
+  let openAppUrl = targetDeepLink;
+  if (isAndroid) {
+    const m = /^partenairemagb:\/\/(.*)$/i.exec(targetDeepLink);
+    if (m) {
+      openAppUrl = `intent://${m[1]}#Intent;scheme=${APP_SCHEME};package=${ANDROID_PACKAGE};end`;
+    }
+  }
+
   // La page contient un script inline : assouplir la CSP de helmet pour cette réponse uniquement
   res.set('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'");
 
@@ -221,7 +236,7 @@ router.get('/mobile-callback', (req, res) => {
   <p class="hint">Si rien ne se passe, appuyez sur le bouton ci-dessus.</p>
   <a id="open-web" class="link" href="#">Je n'ai pas l'application</a>
   <script>
-    var deepLink = ${toInlineScriptString(targetDeepLink)};
+    var deepLink = ${toInlineScriptString(openAppUrl)};
     var fallbackUrl = ${toInlineScriptString(fallbackUrl)};
     document.getElementById('open-app').href = deepLink;
     document.getElementById('open-web').href = fallbackUrl;
