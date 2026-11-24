@@ -174,6 +174,26 @@ class MoneyFusionService {
   }
 
   /**
+   * Interroger MoneyFusion sur le statut d'un paiement.
+   * La bibliothèque fusionpay (0.0.7) appelle https://www.pay.moneyfusion.net/... : ce domaine
+   * « www. » ne répond plus (toutes les vérifications échouaient en « fetch failed »).
+   * On appelle directement l'adresse sans « www. », qui fonctionne.
+   */
+  async fetchPaymentStatus(token) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(`${this.webhookCheckUrl}/${encodeURIComponent(token)}`, { signal: controller.signal });
+      if (!res.ok && res.status !== 201) {
+        throw new Error(`MoneyFusion HTTP ${res.status}`);
+      }
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * Vérifier le statut d'un paiement avec retry automatique et mise à jour des statuts
    */
   async verifyPayment(token, paymentRecord = null) {
@@ -183,8 +203,7 @@ class MoneyFusionService {
       try {
         console.log(`🔍 MoneyFusion - Tentative de vérification ${attempt}/${this.retryAttempts} pour token: ${token}`);
         
-        const payment = new FusionPay(this.apiUrl);
-        const response = await payment.checkPaymentStatus(token);
+        const response = await this.fetchPaymentStatus(token);
 
         if (response.statut && response.data) {
           const paymentData = response.data;
@@ -274,7 +293,7 @@ class MoneyFusionService {
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
-        const response = await new FusionPay(this.apiUrl).checkPaymentStatus(token);
+        const response = await this.fetchPaymentStatus(token);
 
         if (response?.statut && response.data) {
           return {
